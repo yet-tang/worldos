@@ -6,6 +6,7 @@ from .intents import Intent, ValidationIssue, ValidationResult
 from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledge
 from .memory import MemoryEngine, MemoryPolicy, MemoryProjection, MemoryRecord, replay_memory
 from .modules import BaseWorldModule, ModuleContext, WorldModule, WorldModuleRegistry
+from .narrator import NarrativeContext, NarrativeEvent, NarratorReadAPI
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
@@ -21,6 +22,7 @@ __all__ = [
     "PlanStep", "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
     "ModuleContext", "WorldModule", "BaseWorldModule", "WorldModuleRegistry",
     "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
-    "TimelineSnapshot", "ActorDebugView", "WorldInspector",
-    "InMemoryEventStore", "WorldProjection", "replay_world",
+    "TimelineSnapshot", "ActorDebugView", "WorldInspector", "NarrativeEvent",
+    "NarrativeContext", "NarratorReadAPI", "InMemoryEventStore", "WorldProjection",
+    "replay_world",
 ]
