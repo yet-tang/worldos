@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from .events import Event, NewEvent
 from .knowledge import KnowledgeProjection, replay_knowledge
 from .memory import MemoryEngine, MemoryProjection, replay_memory
+from .modules import ModuleContext, WorldModule, WorldModuleRegistry
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import GoalPlanner, PlannerProjection, PlanningContext, replay_planning
@@ -26,14 +27,15 @@ class TickResult(BaseModel):
 
 
 class DeterministicTickEngine:
-    """Runs one replayable world tick through cognition, action, perception and memory."""
+    """Runs one replayable world tick through modules, cognition, action, perception and memory."""
 
-    def __init__(self, store: InMemoryEventStore, *, world_seed: str | int, planner: GoalPlanner | None = None, perception: PerceptionEngine | None = None, memory: MemoryEngine | None = None) -> None:
+    def __init__(self, store: InMemoryEventStore, *, world_seed: str | int, planner: GoalPlanner | None = None, perception: PerceptionEngine | None = None, memory: MemoryEngine | None = None, modules: tuple[WorldModule, ...] = ()) -> None:
         self.store = store
         self.pipeline = IntentPipeline(store, world_seed=world_seed)
         self.planner = planner or GoalPlanner()
         self.perception = perception or PerceptionEngine()
         self.memory = memory or MemoryEngine()
+        self.modules = WorldModuleRegistry(modules)
 
     def run_tick(self, timeline_id: str, tick: int) -> TickResult:
         if tick < 0:
@@ -46,6 +48,9 @@ class DeterministicTickEngine:
         intent_results: list[IntentProcessingResult] = []
         phase_counts: dict[str, int] = {}
         self._append(timeline_id, [NewEvent(tick=tick, phase="scheduler", event_type="tick.started", payload={"tick": tick})], committed, phase_counts)
+
+        pre_context = self._module_context(timeline_id, tick)
+        self._append(timeline_id, self.modules.before_actions(pre_context), committed, phase_counts)
 
         _, planning, _ = self._projections(timeline_id)
         actors = tuple(sorted(owner_id for owner_id in planning.goals_by_owner if planning.active_goals(owner_id)))
@@ -77,6 +82,11 @@ class DeterministicTickEngine:
             if step_id and goal_id:
                 self._append(timeline_id, [NewEvent(tick=tick, phase="planning", event_type="plan.step_status_changed", actor_id=actor_id, subject_ids=(actor_id,), correlation_id=goal_id, caused_by=tuple(event.event_id for event in result.committed_events), payload={"goal_id": goal_id, "step_id": step_id, "status": "completed" if result.accepted else "failed"})], committed, phase_counts)
 
+        post_context = self._module_context(timeline_id, tick)
+        module_events = self.modules.after_actions(post_context, tuple(action_events))
+        self._append(timeline_id, module_events, committed, phase_counts)
+        action_events.extend(event for event in committed if event.tick == tick and event.phase == "module")
+
         if action_events:
             perception_candidates = self.perception.derive(action_events, replay_world(self.store.read(timeline_id)))
             self._append(timeline_id, perception_candidates, committed, phase_counts)
@@ -85,7 +95,7 @@ class DeterministicTickEngine:
         memory_candidates = self.memory.derive(self._knowledge_for_tick(knowledge, tick), tick=tick)
         self._append(timeline_id, memory_candidates, committed, phase_counts)
 
-        completion = NewEvent(tick=tick, phase="scheduler", event_type="tick.completed", caused_by=tuple(event.event_id for event in committed), payload={"tick": tick, "actors": list(actors), "accepted_intents": sum(1 for result in intent_results if result.accepted), "rejected_intents": sum(1 for result in intent_results if not result.accepted), "event_count_before_completion": len(committed)})
+        completion = NewEvent(tick=tick, phase="scheduler", event_type="tick.completed", caused_by=tuple(event.event_id for event in committed), payload={"tick": tick, "actors": list(actors), "modules": [module.name for module in self.modules.modules], "accepted_intents": sum(1 for result in intent_results if result.accepted), "rejected_intents": sum(1 for result in intent_results if not result.accepted), "event_count_before_completion": len(committed)})
         self._append(timeline_id, [completion], committed, phase_counts)
         return TickResult(timeline_id=timeline_id, tick=tick, actors=actors, intent_results=tuple(intent_results), committed_events=tuple(committed), phase_counts=phase_counts)
 
@@ -100,6 +110,10 @@ class DeterministicTickEngine:
     def _projections(self, timeline_id: str) -> tuple[WorldProjection, PlannerProjection, MemoryProjection]:
         events = self.store.read(timeline_id)
         return replay_world(events), replay_planning(events), replay_memory(events)
+
+    def _module_context(self, timeline_id: str, tick: int) -> ModuleContext:
+        history = tuple(self.store.read(timeline_id))
+        return ModuleContext(timeline_id=timeline_id, tick=tick, world=replay_world(history), history=history)
 
     @staticmethod
     def _knowledge_for_tick(knowledge: KnowledgeProjection, tick: int) -> KnowledgeProjection:
