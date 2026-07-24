@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from copy import deepcopy
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from .events import Event, NewEvent
+from .intents import Intent
+from .memory import MemoryProjection
+from .world import WorldProjection
+
+GoalStatus = Literal["active", "completed", "failed", "suspended"]
+StepStatus = Literal["pending", "selected", "completed", "failed"]
+
+
+class Goal(BaseModel):
+    goal_id: str
+    owner_id: str
+    goal_type: str
+    priority: int = 0
+    status: GoalStatus = "active"
+    parent_goal_id: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    created_tick: int = 0
+
+
+class PlanStep(BaseModel):
+    step_id: str
+    goal_id: str
+    action_type: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    status: StepStatus = "pending"
+    ordinal: int = 0
+
+
+class PlannerProjection(BaseModel):
+    goals_by_owner: dict[str, dict[str, Goal]] = Field(default_factory=dict)
+    steps_by_goal: dict[str, dict[str, PlanStep]] = Field(default_factory=dict)
+    applied_event_ids: list[str] = Field(default_factory=list)
+
+    def active_goals(self, owner_id: str) -> list[Goal]:
+        goals = self.goals_by_owner.get(owner_id, {}).values()
+        return sorted(
+            [goal for goal in goals if goal.status == "active"],
+            key=lambda goal: (-goal.priority, goal.created_tick, goal.goal_id),
+        )
+
+    def pending_steps(self, goal_id: str) -> list[PlanStep]:
+        steps = self.steps_by_goal.get(goal_id, {}).values()
+        return sorted(
+            [step for step in steps if step.status == "pending"],
+            key=lambda step: (step.ordinal, step.step_id),
+        )
+
+
+class PlanningContext(BaseModel):
+    owner_id: str
+    tick: int
+    world: WorldProjection
+    memory: MemoryProjection
+
+
+class GoalPlanner:
+    """Deterministic reference planner that converts explicit goals into intents."""
+
+    def choose_goal(self, projection: PlannerProjection, owner_id: str) -> Goal | None:
+        goals = projection.active_goals(owner_id)
+        return goals[0] if goals else None
+
+    def plan(self, goal: Goal, context: PlanningContext) -> list[NewEvent]:
+        steps = self._steps_for(goal, context)
+        return [
+            NewEvent(
+                tick=context.tick,
+                phase="planning",
+                event_type="plan.step_created",
+                actor_id=goal.owner_id,
+                subject_ids=(goal.owner_id,),
+                correlation_id=goal.goal_id,
+                payload=step.model_dump(mode="json"),
+            )
+            for step in steps
+        ]
+
+    def next_intent(self, projection: PlannerProjection, context: PlanningContext) -> Intent | None:
+        goal = self.choose_goal(projection, context.owner_id)
+        if goal is None:
+            return None
+        pending = projection.pending_steps(goal.goal_id)
+        if not pending:
+            return None
+        step = pending[0]
+        return Intent(
+            tick=context.tick,
+            actor_id=context.owner_id,
+            action_type=step.action_type,
+            arguments=deepcopy(step.arguments),
+            correlation_id=goal.goal_id,
+            metadata={"goal_id": goal.goal_id, "step_id": step.step_id},
+        )
+
+    def _steps_for(self, goal: Goal, context: PlanningContext) -> list[PlanStep]:
+        if goal.goal_type == "reach_location":
+            destination = goal.parameters["location_id"]
+            return [self._step(goal, 0, "move", {"to_location_id": destination})]
+        if goal.goal_type == "defeat_entity":
+            target_id = goal.parameters["target_id"]
+            return [self._step(goal, 0, "attack", {"target_id": target_id})]
+        if goal.goal_type == "survive":
+            owner = context.world.entities.get(goal.owner_id)
+            health = (owner.components.get("health", {}) if owner else {})
+            current = int(health.get("current", 100))
+            maximum = max(1, int(health.get("maximum", 100)))
+            if current * 2 < maximum and "safe_location_id" in goal.parameters:
+                return [self._step(goal, 0, "move", {"to_location_id": goal.parameters["safe_location_id"]})]
+            return []
+        return []
+
+    @staticmethod
+    def _step(goal: Goal, ordinal: int, action_type: str, arguments: dict[str, Any]) -> PlanStep:
+        canonical = json.dumps(
+            {"goal_id": goal.goal_id, "ordinal": ordinal, "action_type": action_type, "arguments": arguments},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:20]
+        return PlanStep(
+            step_id=f"step_{digest}",
+            goal_id=goal.goal_id,
+            action_type=action_type,
+            arguments=deepcopy(arguments),
+            ordinal=ordinal,
+        )
+
+
+def reduce_planning(state: PlannerProjection, event: Event) -> PlannerProjection:
+    next_state = state.model_copy(deep=True)
+    if event.event_type == "goal.created":
+        goal = Goal(**event.payload)
+        next_state.goals_by_owner.setdefault(goal.owner_id, {})[goal.goal_id] = goal
+    elif event.event_type == "goal.status_changed":
+        owner_id = event.payload["owner_id"]
+        goal_id = event.payload["goal_id"]
+        next_state.goals_by_owner[owner_id][goal_id].status = event.payload["status"]
+    elif event.event_type == "plan.step_created":
+        step = PlanStep(**event.payload)
+        next_state.steps_by_goal.setdefault(step.goal_id, {})[step.step_id] = step
+    elif event.event_type == "plan.step_status_changed":
+        goal_id = event.payload["goal_id"]
+        step_id = event.payload["step_id"]
+        next_state.steps_by_goal[goal_id][step_id].status = event.payload["status"]
+    else:
+        return next_state
+    next_state.applied_event_ids.append(event.event_id)
+    return next_state
+
+
+def replay_planning(events: list[Event], initial: PlannerProjection | None = None) -> PlannerProjection:
+    state = initial.model_copy(deep=True) if initial else PlannerProjection()
+    for event in events:
+        state = reduce_planning(state, event)
+    return state
