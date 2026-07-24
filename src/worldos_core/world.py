@@ -32,11 +32,22 @@ class WorldProjection(BaseModel):
 Reducer = Callable[[WorldProjection, Event], WorldProjection]
 
 
+NON_WORLD_EVENTS = {
+    "intent.rejected",
+    "move.attempted",
+    "move.resolved",
+    "attack.attempted",
+    "attack.resolved",
+    "observation.created",
+    "belief.updated",
+}
+
+
 def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
     next_state = state.model_copy(deep=True)
     next_state.tick = max(next_state.tick, event.tick)
 
-    if event.event_type in {"intent.rejected", "move.attempted", "move.resolved", "attack.attempted", "attack.resolved"}:
+    if event.event_type in NON_WORLD_EVENTS:
         pass
     elif event.event_type == "world.created":
         next_state.flags.update(event.payload.get("flags", {}))
