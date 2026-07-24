@@ -93,11 +93,14 @@ class GoalPlanner:
         if not pending:
             return None
         step = pending[0]
+        parameters = deepcopy(step.arguments)
+        target_id = parameters.pop("target_id", None)
         return Intent(
             tick=context.tick,
+            intent_type=step.action_type,
             actor_id=context.owner_id,
-            action_type=step.action_type,
-            arguments=deepcopy(step.arguments),
+            target_id=target_id,
+            parameters=parameters,
             correlation_id=goal.goal_id,
             metadata={"goal_id": goal.goal_id, "step_id": step.step_id},
         )
@@ -111,7 +114,7 @@ class GoalPlanner:
             return [self._step(goal, 0, "attack", {"target_id": target_id})]
         if goal.goal_type == "survive":
             owner = context.world.entities.get(goal.owner_id)
-            health = (owner.components.get("health", {}) if owner else {})
+            health = owner.components.get("health", {}) if owner else {}
             current = int(health.get("current", 100))
             maximum = max(1, int(health.get("maximum", 100)))
             if current * 2 < maximum and "safe_location_id" in goal.parameters:
