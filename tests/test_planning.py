@@ -1,6 +1,6 @@
 from worldos_core.events import NewEvent
 from worldos_core.memory import MemoryProjection
-from worldos_core.planning import GoalPlanner, PlanningContext, PlannerProjection, replay_planning
+from worldos_core.planning import GoalPlanner, PlanningContext, replay_planning
 from worldos_core.store import InMemoryEventStore
 from worldos_core.world import replay_world
 
@@ -36,8 +36,8 @@ def test_plans_reach_location_and_emits_intent():
     committed += _commit(store, plan_events)
     planning = replay_planning(committed)
     intent = planner.next_intent(planning, context)
-    assert intent.action_type == "move"
-    assert intent.arguments == {"to_location_id": "inn"}
+    assert intent.intent_type == "move"
+    assert intent.parameters == {"to_location_id": "inn"}
     assert intent.correlation_id == "g1"
 
 
@@ -53,6 +53,21 @@ def test_planner_is_deterministic():
     first = planner.plan(goal, context)
     second = planner.plan(goal, context)
     assert [event.model_dump(mode="json") for event in first] == [event.model_dump(mode="json") for event in second]
+
+
+def test_defeat_goal_maps_target_to_intent_target():
+    store = InMemoryEventStore()
+    committed = _commit(store, [
+        NewEvent(tick=1, phase="cognition", event_type="goal.created", actor_id="hero", subject_ids=("hero",), payload={"goal_id":"g1","owner_id":"hero","goal_type":"defeat_entity","priority":5,"parameters":{"target_id":"bandit"},"created_tick":1}),
+    ])
+    planning = replay_planning(committed)
+    context = PlanningContext(owner_id="hero", tick=2, world=_world(store), memory=MemoryProjection())
+    planner = GoalPlanner()
+    committed += _commit(store, planner.plan(planner.choose_goal(planning, "hero"), context))
+    intent = planner.next_intent(replay_planning(committed), context)
+    assert intent.intent_type == "attack"
+    assert intent.target_id == "bandit"
+    assert intent.parameters == {}
 
 
 def test_survive_goal_uses_current_world_state():
