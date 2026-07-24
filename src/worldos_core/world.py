@@ -36,7 +36,9 @@ def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
     next_state = state.model_copy(deep=True)
     next_state.tick = max(next_state.tick, event.tick)
 
-    if event.event_type == "world.created":
+    if event.event_type in {"intent.rejected", "move.attempted", "move.resolved", "attack.attempted", "attack.resolved"}:
+        pass
+    elif event.event_type == "world.created":
         next_state.flags.update(event.payload.get("flags", {}))
     elif event.event_type == "entity.created":
         entity_id = _single_subject(event)
