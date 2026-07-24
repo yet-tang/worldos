@@ -6,6 +6,7 @@ from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledg
 from .memory import MemoryEngine, MemoryPolicy, MemoryProjection, MemoryRecord, replay_memory
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
+from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
 from .store import InMemoryEventStore
 from .world import WorldProjection, replay_world
 
@@ -27,6 +28,12 @@ __all__ = [
     "MemoryPolicy",
     "MemoryEngine",
     "replay_memory",
+    "Goal",
+    "PlanStep",
+    "PlannerProjection",
+    "PlanningContext",
+    "GoalPlanner",
+    "replay_planning",
     "InMemoryEventStore",
     "WorldProjection",
     "replay_world",
