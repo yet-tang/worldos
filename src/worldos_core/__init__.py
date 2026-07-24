@@ -3,6 +3,7 @@
 from .events import Event, NewEvent
 from .intents import Intent, ValidationIssue, ValidationResult
 from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledge
+from .memory import MemoryEngine, MemoryPolicy, MemoryProjection, MemoryRecord, replay_memory
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .store import InMemoryEventStore
@@ -21,6 +22,11 @@ __all__ = [
     "KnowledgeProjection",
     "PerceptionEngine",
     "replay_knowledge",
+    "MemoryRecord",
+    "MemoryProjection",
+    "MemoryPolicy",
+    "MemoryEngine",
+    "replay_memory",
     "InMemoryEventStore",
     "WorldProjection",
     "replay_world",
