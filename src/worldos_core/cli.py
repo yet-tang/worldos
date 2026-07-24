@@ -12,10 +12,16 @@ from .store import InMemoryEventStore
 from .world import replay_world
 
 
-def _dump(value: Any) -> None:
+def _json_default(value: Any) -> Any:
     if hasattr(value, "model_dump"):
-        value = value.model_dump(mode="json")
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return value.model_dump(mode="json")
+    if isinstance(value, tuple):
+        return list(value)
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _dump(value: Any) -> None:
+    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=_json_default))
 
 
 def build_demo_store(*, ticks: int = 1, world_seed: str = "worldos-demo") -> InMemoryEventStore:
