@@ -40,6 +40,14 @@ NON_WORLD_EVENTS = {
     "attack.resolved",
     "observation.created",
     "belief.updated",
+    "memory.recorded",
+    "memory.forgotten",
+    "goal.created",
+    "goal.status_changed",
+    "plan.step_created",
+    "plan.step_status_changed",
+    "tick.started",
+    "tick.completed",
 }
 
 
