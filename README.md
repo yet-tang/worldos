@@ -1,67 +1,148 @@
-# WorldOS v1 Architecture Baseline
+# WorldOS v1
 
 WorldOS 是一个事件驱动、可回放、可分叉的 AI 世界模拟内核。世界先运行，叙事器只读取历史；小说、剧本、漫画和游戏剧情是同一条世界历史的不同投影。
 
-本仓库是从 WorldOS v0.2 原型迁移到规范驱动架构的第一条基线，包含：
+## 当前能力
 
-- RFC-0001：核心宪法与边界
-- RFC-0002：Entity / Component 模型
-- RFC-0003：Event Store、回放与时间线分叉
-- RFC-0004：Tick 生命周期和确定性
-- RFC-0005：Knowledge / Memory / Belief 分层
-- RFC-0006：Agent 决策协议
-- RFC-0007：Narrator 与 Director 权限边界
-- 一个可运行的最小事件溯源内核
-- 回放、校验和分叉测试
+- 事件存储、确定性回放与 Timeline 分叉
+- Entity / Component 世界投影
+- Intent 验证与确定性 Resolution
+- Observation、Belief 与角色知识隔离
+- Working、Episodic、Semantic、Identity Memory
+- Goal Tree 与确定性 Planner
+- Scheduler / Tick Engine
+- 可插拔 World Module 接口
+- Replay-backed Inspector / Debug API
+- Narrator 只读上下文 API
+- CLI 示例与端到端测试
 
-## 当前里程碑
+世界运行链路：
 
-这不是完整模拟器，而是 `v1.0 Architecture Kernel`：先证明所有世界变化都能通过事件重建，且同一历史可稳定回放和分叉。
+```text
+Tick Started
+→ World Modules: Before Actions
+→ Goal Selection
+→ Plan Materialization
+→ Intent Validation / Resolution
+→ World Effects
+→ World Modules: After Actions
+→ Observation / Belief
+→ Memory
+→ Tick Completed
+→ Inspector
+→ Narrator
+```
 
-## 快速运行
+Narrator 永远位于 Event Store 的只读下游。
+
+## 安装
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
-pytest -q
+python -m pip install -e '.[dev]'
+```
+
+Windows PowerShell：
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e '.[dev]'
+```
+
+## 运行测试
+
+```bash
+python -m pytest -q
+```
+
+GitHub Actions 会在 Python 3.11、3.12 和 3.13 上执行测试与 CLI smoke test。
+
+## CLI
+
+### 完整架构演示
+
+```bash
 worldos-core demo
 ```
 
-示例会：
+运行主世界线，创建分支，并输出两个 Timeline 的状态哈希。
 
-1. 创建世界与两个 Entity；
-2. 追加移动、伤害事件；
-3. 回放得到主时间线状态；
-4. 在伤害发生前创建分支；
-5. 在分支中追加另一组事件；
-6. 输出两个世界线的不同状态与摘要哈希。
+### 运行确定性世界 Tick
 
-## 架构原则
+```bash
+worldos-core simulate --ticks 1 --seed worldos-demo
+```
+
+输出事件数量、世界状态和 canonical hash。同一历史与同一 seed 应产生完全一致的结果。
+
+### 检查角色运行状态
+
+```bash
+worldos-core inspect traveler --ticks 1
+```
+
+输出角色的物理状态、观察、信念、记忆、目标和计划步骤。
+
+### 获取 Narrator 上下文
+
+全知视角：
+
+```bash
+worldos-core narrate --ticks 1
+```
+
+角色视角：
+
+```bash
+worldos-core narrate --actor witness --ticks 1
+```
+
+角色视角不会返回世界哈希，也不会暴露该角色未观察到的事件。
+
+## Python 示例
+
+```python
+from worldos_core.cli import build_demo_store
+from worldos_core.inspector import WorldInspector
+from worldos_core.narrator import NarratorReadAPI
+
+store = build_demo_store(ticks=1, world_seed="my-world")
+inspector = WorldInspector(store)
+
+snapshot = inspector.snapshot("main")
+traveler = inspector.actor("traveler", "main")
+narrative = NarratorReadAPI(inspector).context(
+    "main",
+    perspective_actor_id="traveler",
+)
+
+print(snapshot.world_hash)
+print(traveler.memories)
+print(narrative.events)
+```
+
+## 核心原则
 
 1. Event Store 是事实源；State 是可重建缓存。
 2. Agent 只提交 Intent，不直接修改 State。
 3. Reducer 必须纯函数化、可重放、无外部副作用。
 4. 随机结果必须先物化为事件数据，再由 Reducer 应用。
 5. Knowledge、Belief、Memory 与客观世界事实彼此独立。
-6. Narrator 只读；Director 只能提交受规则约束的世界 Intent。
+6. Narrator 只读；Director 只能提交受规则约束的 Intent。
 7. 每个事件具有因果、来源、时间线和模式版本。
+8. CLI、Inspector 和 Narrator 都不能绕过事件管线修改世界。
+
+## RFC
+
+`docs/rfcs/` 保存 WorldOS 的规范，包括核心宪法、事件存储、Tick、Intent、Knowledge、Memory、Planner、World Modules、Inspector、Narrator 与 CLI 验收边界。
 
 ## 目录
 
 ```text
 docs/rfcs/           设计规范
-src/worldos_core/    最小事件内核
-tests/               架构验收测试
-examples/            示例
+src/worldos_core/    世界模拟内核
+tests/               单元与端到端验收测试
+.github/workflows/   持续集成
 ```
-
-## 下一实现阶段
-
-- Command / Intent 验证管线
-- ECS Component Registry
-- Snapshot 与增量回放
-- Knowledge Projection
-- Scheduler 与 Tick Phase
-- Inspector 决策追踪
-- 将“暴雪客栈”迁移为第一个 world package
