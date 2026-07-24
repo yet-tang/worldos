@@ -50,6 +50,7 @@ class DeterministicTickEngine:
         self._append(timeline_id, [NewEvent(tick=tick, phase="scheduler", event_type="tick.started", payload={"tick": tick})], committed, phase_counts)
 
         pre_context = self._module_context(timeline_id, tick)
+        perception_state = pre_context.world.model_copy(deep=True)
         self._append(timeline_id, self.modules.before_actions(pre_context), committed, phase_counts)
 
         _, planning, _ = self._projections(timeline_id)
@@ -88,7 +89,7 @@ class DeterministicTickEngine:
         action_events.extend(event for event in committed if event.tick == tick and event.phase == "module")
 
         if action_events:
-            perception_candidates = self.perception.derive(action_events, replay_world(self.store.read(timeline_id)))
+            perception_candidates = self.perception.derive(action_events, perception_state)
             self._append(timeline_id, perception_candidates, committed, phase_counts)
 
         knowledge = replay_knowledge(self.store.read(timeline_id))
