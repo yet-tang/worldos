@@ -7,6 +7,7 @@ from .memory import MemoryEngine, MemoryPolicy, MemoryProjection, MemoryRecord, 
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
+from .scheduler import DeterministicTickEngine, TickAlreadyCompletedError, TickResult
 from .store import InMemoryEventStore
 from .world import WorldProjection, replay_world
 
@@ -34,6 +35,9 @@ __all__ = [
     "PlanningContext",
     "GoalPlanner",
     "replay_planning",
+    "DeterministicTickEngine",
+    "TickAlreadyCompletedError",
+    "TickResult",
     "InMemoryEventStore",
     "WorldProjection",
     "replay_world",
