@@ -7,7 +7,9 @@ from typing import Any
 from .events import NewEvent
 from .inspector import WorldInspector
 from .narrator import NarratorReadAPI
+from .runner import WorldRunner
 from .scheduler import DeterministicTickEngine
+from .sqlite_store import SQLiteEventStore
 from .store import InMemoryEventStore
 from .world import replay_world
 
@@ -154,6 +156,57 @@ def narrate(actor_id: str | None, ticks: int, seed: str) -> None:
     _dump(api.context("main", perspective_actor_id=actor_id))
 
 
+def initialize_persistent_world(database: str) -> None:
+    with SQLiteEventStore(database) as store:
+        if store.read("main"):
+            raise ValueError("main timeline is already initialized")
+        store.append_batch(
+            "main",
+            [
+                NewEvent(
+                    tick=0,
+                    phase="bootstrap",
+                    event_type="world.created",
+                    payload={"flags": {"world_name": "First Living World"}},
+                )
+            ],
+            expected_sequence=0,
+        )
+    _dump({"database": database, "timeline_id": "main", "initialized": True})
+
+
+def runner_command(command: str, database: str, timeline: str, seed: str, **options: Any) -> None:
+    with WorldRunner(
+        database,
+        timeline_id=timeline,
+        world_seed=seed,
+        snapshot_interval=int(options.get("snapshot_interval", 100)),
+    ) as runner:
+        if command == "run":
+            _dump(runner.run(int(options["ticks"])).status)
+        elif command == "step":
+            _dump(runner.step(int(options["ticks"])).status)
+        elif command == "pause":
+            _dump(runner.pause())
+        elif command == "resume":
+            _dump(runner.resume())
+        elif command == "status":
+            _dump(runner.status())
+        elif command == "branch":
+            branch_id = str(options["branch_id"])
+            runner.branch(
+                branch_id,
+                through_sequence=options.get("through_sequence"),
+            )
+            _dump({"source_timeline_id": timeline, "branch_timeline_id": branch_id})
+
+
+def _add_runner_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", required=True, help="SQLite world database")
+    parser.add_argument("--timeline", default="main")
+    parser.add_argument("--seed", default="worldos")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="worldos-core")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -174,6 +227,28 @@ def main() -> None:
     narrate_parser.add_argument("--ticks", type=int, default=1)
     narrate_parser.add_argument("--seed", default="worldos-demo")
 
+    init_parser = subparsers.add_parser("world-init", help="initialize a persistent SQLite world")
+    init_parser.add_argument("--db", required=True)
+
+    run_parser = subparsers.add_parser("run", help="run persistent world ticks until paused or count reached")
+    _add_runner_common(run_parser)
+    run_parser.add_argument("--ticks", type=int, default=1)
+    run_parser.add_argument("--snapshot-interval", type=int, default=100)
+
+    step_parser = subparsers.add_parser("step", help="advance persistent world even when paused")
+    _add_runner_common(step_parser)
+    step_parser.add_argument("--ticks", type=int, default=1)
+    step_parser.add_argument("--snapshot-interval", type=int, default=100)
+
+    for name in ("pause", "resume", "status"):
+        control_parser = subparsers.add_parser(name, help=f"{name} a persistent world")
+        _add_runner_common(control_parser)
+
+    branch_parser = subparsers.add_parser("branch", help="create a persistent timeline branch")
+    _add_runner_common(branch_parser)
+    branch_parser.add_argument("branch_id")
+    branch_parser.add_argument("--through-sequence", type=int)
+
     args = parser.parse_args()
     if args.command == "demo":
         demo()
@@ -183,6 +258,28 @@ def main() -> None:
         inspect(args.actor_id, args.ticks, args.seed)
     elif args.command == "narrate":
         narrate(args.actor_id, args.ticks, args.seed)
+    elif args.command == "world-init":
+        initialize_persistent_world(args.db)
+    elif args.command in {"run", "step"}:
+        runner_command(
+            args.command,
+            args.db,
+            args.timeline,
+            args.seed,
+            ticks=args.ticks,
+            snapshot_interval=args.snapshot_interval,
+        )
+    elif args.command in {"pause", "resume", "status"}:
+        runner_command(args.command, args.db, args.timeline, args.seed)
+    elif args.command == "branch":
+        runner_command(
+            "branch",
+            args.db,
+            args.timeline,
+            args.seed,
+            branch_id=args.branch_id,
+            through_sequence=args.through_sequence,
+        )
 
 
 if __name__ == "__main__":
