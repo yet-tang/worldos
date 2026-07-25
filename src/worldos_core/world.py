@@ -54,6 +54,9 @@ NON_WORLD_EVENTS = {
     "trade.completed",
     "rumor.spread",
     "conflict.resolved",
+    "runner.paused",
+    "runner.resumed",
+    "runner.recovered",
 }
 
 

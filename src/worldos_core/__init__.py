@@ -11,6 +11,7 @@ from .needs import NeedAssessment, NeedEngine, NeedsProjection, replay_needs
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
+from .runner import RunResult, RunnerMetrics, RunnerStatus, WorldRunner
 from .scheduler import DeterministicTickEngine, TickAlreadyCompletedError, TickResult
 from .sqlite_store import SQLiteEventStore, StoredSnapshot
 from .store import EventStoreError, InMemoryEventStore
@@ -26,6 +27,7 @@ __all__ = [
     "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
     "ModuleContext", "WorldModule", "BaseWorldModule", "WorldModuleRegistry",
     "SurvivalEconomyModule", "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
+    "RunResult", "RunnerMetrics", "RunnerStatus", "WorldRunner",
     "TimelineSnapshot", "ActorDebugView", "WorldInspector", "NarrativeEvent",
     "NarrativeContext", "NarratorReadAPI", "EventStoreError", "InMemoryEventStore",
     "SQLiteEventStore", "StoredSnapshot", "WorldProjection", "replay_world",
