@@ -49,6 +49,11 @@ NON_WORLD_EVENTS = {
     "plan.step_status_changed",
     "tick.started",
     "tick.completed",
+    "survival.metabolized",
+    "resource.produced",
+    "trade.completed",
+    "rumor.spread",
+    "conflict.resolved",
 }
 
 
