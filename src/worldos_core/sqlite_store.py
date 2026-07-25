@@ -23,30 +23,33 @@ class StoredSnapshot:
 
 
 class SQLiteEventStore:
-    """Durable Event Store with atomic batches, branches, migrations and snapshots.
-
-    SQLite runs in WAL mode and every append is committed in one ``BEGIN IMMEDIATE``
-    transaction. A process that stops between statements therefore exposes either the
-    complete event batch or none of it when the database is reopened.
-    """
+    """Durable Event Store with atomic batches, branches and projection snapshots."""
 
     SCHEMA_VERSION = 1
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, isolation_level=None)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA journal_mode = WAL")
-        self._connection.execute("PRAGMA synchronous = FULL")
+        self._connection: sqlite3.Connection | None = sqlite3.connect(
+            self.path, isolation_level=None
+        )
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = FULL")
         self._migrate()
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise EventStoreError("event store is closed")
+        return self._connection
 
     def close(self) -> None:
         if self._connection is not None:
             self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._connection.close()
-            self._connection = None  # type: ignore[assignment]
+            self._connection = None
 
     def __enter__(self) -> SQLiteEventStore:
         return self
@@ -56,7 +59,7 @@ class SQLiteEventStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self._connection
+        connection = self.connection
         connection.execute("BEGIN IMMEDIATE")
         try:
             yield connection
@@ -67,49 +70,49 @@ class SQLiteEventStore:
             connection.execute("COMMIT")
 
     def _migrate(self) -> None:
-        self._connection.execute(
+        self.connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)"
         )
-        row = self._connection.execute(
-            "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations"
-        ).fetchone()
-        current = int(row["version"])
+        current = int(
+            self.connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
+        )
         if current > self.SCHEMA_VERSION:
             raise EventStoreError(
                 f"database schema {current} is newer than supported {self.SCHEMA_VERSION}"
             )
-        if current < 1:
-            with self._transaction() as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE timelines (
-                        timeline_id TEXT PRIMARY KEY,
-                        parent_timeline_id TEXT REFERENCES timelines(timeline_id),
-                        parent_through_sequence INTEGER NOT NULL DEFAULT 0,
-                        CHECK(parent_through_sequence >= 0)
-                    );
-                    CREATE TABLE events (
-                        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
-                        sequence INTEGER NOT NULL,
-                        event_id TEXT NOT NULL UNIQUE,
-                        document TEXT NOT NULL,
-                        PRIMARY KEY (timeline_id, sequence)
-                    );
-                    CREATE INDEX events_timeline_sequence
-                        ON events(timeline_id, sequence);
-                    CREATE TABLE snapshots (
-                        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
-                        sequence INTEGER NOT NULL,
-                        projection TEXT NOT NULL,
-                        state_json TEXT NOT NULL,
-                        state_hash TEXT NOT NULL,
-                        PRIMARY KEY (timeline_id, sequence, projection)
-                    );
-                    INSERT INTO timelines(timeline_id, parent_timeline_id, parent_through_sequence)
-                        VALUES ('main', NULL, 0);
-                    INSERT INTO schema_migrations(version) VALUES (1);
-                    """
-                )
+        if current == 0:
+            self.connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                CREATE TABLE timelines (
+                    timeline_id TEXT PRIMARY KEY,
+                    parent_timeline_id TEXT REFERENCES timelines(timeline_id),
+                    parent_through_sequence INTEGER NOT NULL DEFAULT 0,
+                    CHECK(parent_through_sequence >= 0)
+                );
+                CREATE TABLE events (
+                    timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
+                    sequence INTEGER NOT NULL,
+                    event_id TEXT NOT NULL UNIQUE,
+                    document TEXT NOT NULL,
+                    PRIMARY KEY (timeline_id, sequence)
+                );
+                CREATE INDEX events_timeline_sequence ON events(timeline_id, sequence);
+                CREATE TABLE snapshots (
+                    timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
+                    sequence INTEGER NOT NULL,
+                    projection TEXT NOT NULL,
+                    state_json TEXT NOT NULL,
+                    state_hash TEXT NOT NULL,
+                    PRIMARY KEY (timeline_id, sequence, projection)
+                );
+                INSERT INTO timelines VALUES ('main', NULL, 0);
+                INSERT INTO schema_migrations(version) VALUES (1);
+                COMMIT;
+                """
+            )
 
     def create_timeline(
         self,
@@ -119,11 +122,11 @@ class SQLiteEventStore:
         parent_through_sequence: int | None = None,
     ) -> Timeline:
         with self._transaction() as connection:
-            if self._timeline_row(timeline_id, connection=connection) is not None:
+            if self._timeline_row(timeline_id, connection) is not None:
                 raise EventStoreError(f"timeline already exists: {timeline_id}")
-            if self._timeline_row(parent_timeline_id, connection=connection) is None:
+            if self._timeline_row(parent_timeline_id, connection) is None:
                 raise EventStoreError(f"unknown parent timeline: {parent_timeline_id}")
-            parent_count = self._visible_count(parent_timeline_id, connection=connection)
+            parent_count = self._visible_count(parent_timeline_id, connection)
             cutoff = parent_count if parent_through_sequence is None else parent_through_sequence
             if cutoff < 0 or cutoff > parent_count:
                 raise EventStoreError("parent cutoff is outside visible history")
@@ -146,9 +149,9 @@ class SQLiteEventStore:
     ) -> list[Event]:
         candidates = list(events)
         with self._transaction() as connection:
-            if self._timeline_row(timeline_id, connection=connection) is None:
+            if self._timeline_row(timeline_id, connection) is None:
                 raise EventStoreError(f"unknown timeline: {timeline_id}")
-            visible_count = self._visible_count(timeline_id, connection=connection)
+            visible_count = self._visible_count(timeline_id, connection)
             if expected_sequence is not None and expected_sequence != visible_count:
                 raise EventStoreError(
                     f"optimistic concurrency conflict: expected {expected_sequence}, got {visible_count}"
@@ -164,13 +167,8 @@ class SQLiteEventStore:
                     sequence=sequence,
                 )
                 connection.execute(
-                    "INSERT INTO events(timeline_id, sequence, event_id, document) VALUES (?, ?, ?, ?)",
-                    (
-                        timeline_id,
-                        sequence,
-                        event_id,
-                        event.model_dump_json(),
-                    ),
+                    "INSERT INTO events VALUES (?, ?, ?, ?)",
+                    (timeline_id, sequence, event_id, event.model_dump_json()),
                 )
                 committed.append(event)
         return committed
@@ -210,8 +208,7 @@ class SQLiteEventStore:
         with self._transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO snapshots(timeline_id, sequence, projection, state_json, state_hash)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO snapshots VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(timeline_id, sequence, projection) DO UPDATE SET
                     state_json = excluded.state_json,
                     state_hash = excluded.state_hash
@@ -230,7 +227,7 @@ class SQLiteEventStore:
         if self._timeline_row(timeline_id) is None:
             raise EventStoreError(f"unknown timeline: {timeline_id}")
         limit = self._visible_count(timeline_id) if through_sequence is None else through_sequence
-        row = self._connection.execute(
+        row = self.connection.execute(
             """
             SELECT timeline_id, sequence, projection, state_json, state_hash
             FROM snapshots
@@ -250,16 +247,12 @@ class SQLiteEventStore:
         )
 
     def integrity_check(self) -> bool:
-        row = self._connection.execute("PRAGMA integrity_check").fetchone()
-        return row[0] == "ok"
+        return self.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
     def _timeline_row(
-        self,
-        timeline_id: str,
-        *,
-        connection: sqlite3.Connection | None = None,
+        self, timeline_id: str, connection: sqlite3.Connection | None = None
     ) -> sqlite3.Row | None:
-        active = connection or self._connection
+        active = connection or self.connection
         return active.execute(
             "SELECT timeline_id, parent_timeline_id, parent_through_sequence "
             "FROM timelines WHERE timeline_id = ?",
@@ -267,20 +260,18 @@ class SQLiteEventStore:
         ).fetchone()
 
     def _visible_count(
-        self,
-        timeline_id: str,
-        *,
-        connection: sqlite3.Connection | None = None,
+        self, timeline_id: str, connection: sqlite3.Connection | None = None
     ) -> int:
-        active = connection or self._connection
-        row = self._timeline_row(timeline_id, connection=active)
+        active = connection or self.connection
+        row = self._timeline_row(timeline_id, active)
         if row is None:
             raise EventStoreError(f"unknown timeline: {timeline_id}")
-        local = active.execute(
-            "SELECT COUNT(*) AS count FROM events WHERE timeline_id = ?",
-            (timeline_id,),
-        ).fetchone()["count"]
-        return int(row["parent_through_sequence"]) + int(local)
+        local = int(
+            active.execute(
+                "SELECT COUNT(*) FROM events WHERE timeline_id = ?", (timeline_id,)
+            ).fetchone()[0]
+        )
+        return int(row["parent_through_sequence"]) + local
 
     def _read_documents(self, timeline_id: str) -> list[str]:
         row = self._timeline_row(timeline_id)
@@ -291,7 +282,7 @@ class SQLiteEventStore:
             inherited = self._read_documents(row["parent_timeline_id"])[
                 : row["parent_through_sequence"]
             ]
-        local = self._connection.execute(
+        local = self.connection.execute(
             "SELECT document FROM events WHERE timeline_id = ? ORDER BY sequence",
             (timeline_id,),
         ).fetchall()
