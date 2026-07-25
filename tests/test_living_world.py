@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from worldos_core.events import NewEvent
 from worldos_core.living_world import (
     ACTOR_IDS,
     LOCATIONS,
     initialize_first_living_world,
     run_first_living_world,
 )
-from worldos_core.runner import WorldRunner
 from worldos_core.sqlite_store import SQLiteEventStore
 from worldos_core.world import replay_world
 
@@ -46,46 +44,37 @@ def test_living_world_restarts_branches_and_exposes_narrator(tmp_path: Path) -> 
 
 
 def test_living_world_is_deterministic_across_databases(tmp_path: Path) -> None:
-    left = run_first_living_world(tmp_path / "left.db", ticks=12, restart_at=5, branch_timeline_id="left-alt")
-    right = run_first_living_world(tmp_path / "right.db", ticks=12, restart_at=5, branch_timeline_id="right-alt")
+    left = run_first_living_world(
+        tmp_path / "left.db",
+        ticks=12,
+        restart_at=5,
+        branch_timeline_id="left-alt",
+    )
+    right = run_first_living_world(
+        tmp_path / "right.db",
+        ticks=12,
+        restart_at=5,
+        branch_timeline_id="right-alt",
+    )
 
     assert left.world_hash == right.world_hash
     assert left.event_count == right.event_count
 
 
 def test_persistent_kernel_survives_ten_thousand_ticks(tmp_path: Path) -> None:
-    """Long-run persistence guard without multiplying cognition history.
+    report = run_first_living_world(
+        tmp_path / "long-run.db",
+        ticks=10_000,
+        restart_at=5_000,
+        branch_timeline_id="long-run-alternate",
+    )
 
-    Living behavior is covered above. This test deactivates residents before the long
-    clock run so CI validates 10,000 durable ticks, snapshots, restart, and replay in
-    bounded time and storage.
-    """
-    database = tmp_path / "long-run.db"
-    initialize_first_living_world(database)
-    with SQLiteEventStore(database) as store:
-        history = store.read("main")
-        store.append_batch(
-            "main",
-            [
-                NewEvent(
-                    tick=0,
-                    phase="test-fixture",
-                    event_type="entity.deactivated",
-                    subject_ids=(actor_id,),
-                )
-                for actor_id in ACTOR_IDS
-            ],
-            expected_sequence=len(history),
-        )
+    assert report.ticks == 10_000
+    assert report.restart_verified is True
+    assert report.branch_event_count > 0
 
-    with WorldRunner(database, snapshot_interval=1_000) as runner:
-        runner.run(5_000)
-    with WorldRunner(database, snapshot_interval=1_000) as runner:
-        result = runner.run(5_000)
-        assert result.status.last_completed_tick == 10_000
-        assert result.status.latest_snapshot_sequence is not None
-
-    with SQLiteEventStore(database) as store:
+    with SQLiteEventStore(tmp_path / "long-run.db") as store:
         history = store.read("main")
         assert sum(event.event_type == "tick.completed" for event in history) == 10_000
+        assert store.latest_snapshot("main", "world") is not None
         replay_world(history)
