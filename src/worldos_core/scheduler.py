@@ -6,6 +6,7 @@ from .events import Event, NewEvent
 from .knowledge import KnowledgeProjection, replay_knowledge
 from .memory import MemoryEngine, MemoryProjection, replay_memory
 from .modules import ModuleContext, WorldModule, WorldModuleRegistry
+from .needs import NeedEngine
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import GoalPlanner, PlannerProjection, PlanningContext, replay_planning
@@ -27,14 +28,25 @@ class TickResult(BaseModel):
 
 
 class DeterministicTickEngine:
-    """Runs one replayable world tick through modules, cognition, action, perception and memory."""
+    """Runs one replayable world tick through modules, needs, planning, action and memory."""
 
-    def __init__(self, store: InMemoryEventStore, *, world_seed: str | int, planner: GoalPlanner | None = None, perception: PerceptionEngine | None = None, memory: MemoryEngine | None = None, modules: tuple[WorldModule, ...] = ()) -> None:
+    def __init__(
+        self,
+        store: InMemoryEventStore,
+        *,
+        world_seed: str | int,
+        planner: GoalPlanner | None = None,
+        perception: PerceptionEngine | None = None,
+        memory: MemoryEngine | None = None,
+        needs: NeedEngine | None = None,
+        modules: tuple[WorldModule, ...] = (),
+    ) -> None:
         self.store = store
         self.pipeline = IntentPipeline(store, world_seed=world_seed)
         self.planner = planner or GoalPlanner()
         self.perception = perception or PerceptionEngine()
         self.memory = memory or MemoryEngine()
+        self.needs = needs or NeedEngine()
         self.modules = WorldModuleRegistry(modules)
 
     def run_tick(self, timeline_id: str, tick: int) -> TickResult:
@@ -52,6 +64,14 @@ class DeterministicTickEngine:
         pre_context = self._module_context(timeline_id, tick)
         perception_state = pre_context.world.model_copy(deep=True)
         self._append(timeline_id, self.modules.before_actions(pre_context), committed, phase_counts)
+
+        world, planning, _ = self._projections(timeline_id)
+        self._append(
+            timeline_id,
+            self.needs.derive(world, planning, tick=tick),
+            committed,
+            phase_counts,
+        )
 
         _, planning, _ = self._projections(timeline_id)
         actors = tuple(sorted(owner_id for owner_id in planning.goals_by_owner if planning.active_goals(owner_id)))
