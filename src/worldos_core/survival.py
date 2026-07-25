@@ -56,7 +56,10 @@ class SurvivalEconomyModule(BaseWorldModule):
         changes: list[NewEvent] = []
         for actor_id in sorted(staged):
             original = actors[actor_id].components
-            for component, value in sorted(staged[actor_id].items()):
+            current = staged[actor_id]
+            for component in sorted(set(original) - set(current)):
+                changes.append(NewEvent(tick=context.tick, phase="module", event_type="entity.component_removed", actor_id=actor_id, subject_ids=(actor_id,), payload={"component": component}))
+            for component, value in sorted(current.items()):
                 if original.get(component) != value:
                     changes.append(NewEvent(tick=context.tick, phase="module", event_type="entity.component_set", actor_id=actor_id, subject_ids=(actor_id,), payload={"component": component, "value": value}))
         return changes + health_events + audit
