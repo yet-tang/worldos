@@ -49,6 +49,11 @@ NON_WORLD_EVENTS = {
     "plan.step_status_changed",
     "tick.started",
     "tick.completed",
+    "survival.metabolized",
+    "resource.produced",
+    "trade.completed",
+    "rumor.spread",
+    "conflict.resolved",
 }
 
 
@@ -68,6 +73,9 @@ def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
     elif event.event_type == "entity.component_set":
         entity = _entity(next_state, _single_subject(event))
         entity.components[event.payload["component"]] = deepcopy(event.payload["value"])
+    elif event.event_type == "entity.component_removed":
+        entity = _entity(next_state, _single_subject(event))
+        entity.components.pop(event.payload["component"], None)
     elif event.event_type == "entity.moved":
         entity = _entity(next_state, _single_subject(event))
         entity.components["position"] = {"location_id": event.payload["to_location_id"]}
