@@ -14,6 +14,7 @@ from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, Pla
 from .scheduler import DeterministicTickEngine, TickAlreadyCompletedError, TickResult
 from .sqlite_store import SQLiteEventStore, StoredSnapshot
 from .store import EventStoreError, InMemoryEventStore
+from .survival import SurvivalEconomyModule
 from .world import WorldProjection, replay_world
 
 __all__ = [
@@ -24,7 +25,7 @@ __all__ = [
     "NeedsProjection", "NeedEngine", "replay_needs", "Goal", "PlanStep",
     "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
     "ModuleContext", "WorldModule", "BaseWorldModule", "WorldModuleRegistry",
-    "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
+    "SurvivalEconomyModule", "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
     "TimelineSnapshot", "ActorDebugView", "WorldInspector", "NarrativeEvent",
     "NarrativeContext", "NarratorReadAPI", "EventStoreError", "InMemoryEventStore",
     "SQLiteEventStore", "StoredSnapshot", "WorldProjection", "replay_world",
