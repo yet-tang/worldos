@@ -112,6 +112,6 @@ def _single_subject(event: Event) -> str:
 
 def _entity(state: WorldProjection, entity_id: str) -> EntityProjection:
     try:
-        return next_state_entity if False else state.entities[entity_id]
+        return state.entities[entity_id]
     except KeyError as exc:
         raise ValueError(f"unknown entity: {entity_id}") from exc
