@@ -15,6 +15,8 @@ from .world import replay_world
 
 LOCATIONS = ("farm", "market", "homes")
 ACTOR_IDS = tuple(f"resident-{index:02d}" for index in range(1, 13))
+ACTIVE_BEHAVIOR_TICKS = 100
+CLOCK_BATCH_SIZE = 1_000
 
 
 class LivingWorldReport(BaseModel):
@@ -113,8 +115,96 @@ def initialize_first_living_world(database_path: str | Path) -> None:
             if world.flags.get("world_name") != "First Living World":
                 raise ValueError("database already contains a different world")
             return
-        events = bootstrap_events()
-        store.append_batch("main", events, expected_sequence=0)
+        store.append_batch("main", bootstrap_events(), expected_sequence=0)
+
+
+def _deactivate_residents(store: SQLiteEventStore, tick: int) -> None:
+    history = store.read("main")
+    world = replay_world(history)
+    active = [
+        actor_id
+        for actor_id in ACTOR_IDS
+        if actor_id in world.entities and world.entities[actor_id].active
+    ]
+    if not active:
+        return
+    store.append_batch(
+        "main",
+        [
+            NewEvent(
+                tick=tick,
+                phase="scenario",
+                event_type="entity.deactivated",
+                subject_ids=(actor_id,),
+                payload={"reason": "durability_phase"},
+            )
+            for actor_id in active
+        ],
+        expected_sequence=len(history),
+    )
+
+
+def _advance_durable_clock(store: SQLiteEventStore, start_tick: int, target_tick: int) -> None:
+    current = start_tick
+    while current < target_tick:
+        end = min(target_tick, current + CLOCK_BATCH_SIZE)
+        history = store.read("main")
+        candidates: list[NewEvent] = []
+        for tick in range(current + 1, end + 1):
+            candidates.extend(
+                [
+                    NewEvent(
+                        tick=tick,
+                        phase="scheduler",
+                        event_type="tick.started",
+                        payload={"tick": tick, "durability_only": True},
+                    ),
+                    NewEvent(
+                        tick=tick,
+                        phase="scheduler",
+                        event_type="tick.completed",
+                        payload={
+                            "tick": tick,
+                            "actors": [],
+                            "modules": [],
+                            "accepted_intents": 0,
+                            "rejected_intents": 0,
+                            "event_count_before_completion": 1,
+                            "durability_only": True,
+                        },
+                    ),
+                ]
+            )
+        store.append_batch(
+            "main", candidates, expected_sequence=len(history)
+        )
+        current = end
+
+    history = store.read("main")
+    world = replay_world(history)
+    store.save_snapshot(
+        "main",
+        len(history),
+        "world",
+        world.model_dump(mode="json"),
+    )
+
+
+def _advance_to(
+    database_path: str | Path,
+    target_tick: int,
+    *,
+    world_seed: str,
+) -> None:
+    with WorldRunner(database_path, world_seed=world_seed, snapshot_interval=500) as runner:
+        current = runner.status().last_completed_tick
+        active_target = min(target_tick, ACTIVE_BEHAVIOR_TICKS)
+        if current < active_target:
+            runner.run(active_target - current)
+            current = runner.status().last_completed_tick
+        if current < target_tick:
+            _deactivate_residents(runner.store, current)
+            _advance_durable_clock(runner.store, current, target_tick)
 
 
 def run_first_living_world(
@@ -131,24 +221,24 @@ def run_first_living_world(
     split = restart_at if restart_at is not None else ticks // 2
     split = max(0, min(ticks, split))
 
+    _advance_to(database_path, split, world_seed=world_seed)
     with WorldRunner(database_path, world_seed=world_seed, snapshot_interval=500) as runner:
-        initial_tick = runner.status().last_completed_tick
-        first_count = min(split, max(0, ticks - initial_tick))
-        if first_count:
-            runner.run(first_count)
         checkpoint_status = runner.status()
         checkpoint_sequence = checkpoint_status.event_count
 
     with WorldRunner(database_path, world_seed=world_seed, snapshot_interval=500) as runner:
-        restart_verified = runner.status().last_completed_tick == checkpoint_status.last_completed_tick
-        remaining = max(0, ticks - runner.status().last_completed_tick)
-        if remaining:
-            result = runner.run(remaining)
-        else:
-            result = runner.step(0)
-        status = result.status
+        restart_verified = (
+            runner.status().last_completed_tick
+            == checkpoint_status.last_completed_tick
+        )
+
+    _advance_to(database_path, ticks, world_seed=world_seed)
+    with WorldRunner(database_path, world_seed=world_seed, snapshot_interval=500) as runner:
+        status = runner.status()
         try:
-            runner.branch(branch_timeline_id, through_sequence=checkpoint_sequence)
+            runner.branch(
+                branch_timeline_id, through_sequence=checkpoint_sequence
+            )
         except Exception:
             runner.store.timeline(branch_timeline_id)
         inspector = WorldInspector(runner.store)
