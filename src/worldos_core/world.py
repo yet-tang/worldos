@@ -24,8 +24,6 @@ class WorldProjection(BaseModel):
     applied_event_ids: list[str] = Field(default_factory=list)
 
     def canonical_hash(self) -> str:
-        # Tick and applied event ids are replay metadata, not authoritative world facts.
-        # Cognitive/audit-only events therefore cannot change the physical world hash.
         data = self.model_dump(mode="json", exclude={"tick", "applied_event_ids"})
         canonical = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
@@ -44,6 +42,7 @@ NON_WORLD_EVENTS = {
     "belief.updated",
     "memory.recorded",
     "memory.forgotten",
+    "need.assessed",
     "goal.created",
     "goal.status_changed",
     "plan.step_created",
