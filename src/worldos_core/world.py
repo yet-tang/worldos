@@ -73,6 +73,9 @@ def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
     elif event.event_type == "entity.component_set":
         entity = _entity(next_state, _single_subject(event))
         entity.components[event.payload["component"]] = deepcopy(event.payload["value"])
+    elif event.event_type == "entity.component_removed":
+        entity = _entity(next_state, _single_subject(event))
+        entity.components.pop(event.payload["component"], None)
     elif event.event_type == "entity.moved":
         entity = _entity(next_state, _single_subject(event))
         entity.components["position"] = {"location_id": event.payload["to_location_id"]}
@@ -109,6 +112,6 @@ def _single_subject(event: Event) -> str:
 
 def _entity(state: WorldProjection, entity_id: str) -> EntityProjection:
     try:
-        return state.entities[entity_id]
+        return next_state_entity if False else state.entities[entity_id]
     except KeyError as exc:
         raise ValueError(f"unknown entity: {entity_id}") from exc
