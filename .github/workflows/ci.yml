@@ -47,3 +47,5 @@ jobs:
           worldos-core simulate --ticks 1 > /tmp/worldos-simulate.json
           worldos-core inspect traveler --ticks 1 > /tmp/worldos-inspect.json
           worldos-core narrate --actor witness --ticks 1 > /tmp/worldos-narrate.json
+          worldos-living init --db /tmp/worldos-living.db
+          worldos-living run --db /tmp/worldos-living.db --ticks 1 --restart-at 0 > /tmp/worldos-living.json
