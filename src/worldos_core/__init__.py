@@ -7,6 +7,7 @@ from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledg
 from .memory import MemoryEngine, MemoryPolicy, MemoryProjection, MemoryRecord, replay_memory
 from .modules import BaseWorldModule, ModuleContext, WorldModule, WorldModuleRegistry
 from .narrator import NarrativeContext, NarrativeEvent, NarratorReadAPI
+from .needs import NeedAssessment, NeedEngine, NeedsProjection, replay_needs
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
@@ -19,8 +20,9 @@ __all__ = [
     "Event", "NewEvent", "Intent", "ValidationIssue", "ValidationResult",
     "IntentPipeline", "IntentProcessingResult", "Observation", "Belief",
     "KnowledgeProjection", "PerceptionEngine", "replay_knowledge", "MemoryRecord",
-    "MemoryProjection", "MemoryPolicy", "MemoryEngine", "replay_memory", "Goal",
-    "PlanStep", "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
+    "MemoryProjection", "MemoryPolicy", "MemoryEngine", "replay_memory", "NeedAssessment",
+    "NeedsProjection", "NeedEngine", "replay_needs", "Goal", "PlanStep",
+    "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
     "ModuleContext", "WorldModule", "BaseWorldModule", "WorldModuleRegistry",
     "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
     "TimelineSnapshot", "ActorDebugView", "WorldInspector", "NarrativeEvent",
