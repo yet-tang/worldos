@@ -4,16 +4,18 @@ WorldOS 是一个事件驱动、可回放、可分叉的 AI 世界模拟内核�
 
 ## 当前能力
 
-- 事件存储、确定性回放与 Timeline 分叉
+- SQLite / 内存事件存储、确定性回放与 Timeline 分叉
+- Snapshot、迁移、事务恢复和持久化 World Runner
 - Entity / Component 世界投影
 - Intent 验证与确定性 Resolution
 - Observation、Belief 与角色知识隔离
 - Working、Episodic、Semantic、Identity Memory
-- Goal Tree 与确定性 Planner
+- Needs、Goal Tree 与确定性 Planner
 - Scheduler / Tick Engine
-- 可插拔 World Module 接口
+- 可插拔 World Module 与生存经济模块
 - Replay-backed Inspector / Debug API
 - Narrator 只读上下文 API
+- 本地只读 Web Inspector
 - CLI 示例与端到端测试
 
 世界运行链路：
@@ -21,7 +23,7 @@ WorldOS 是一个事件驱动、可回放、可分叉的 AI 世界模拟内核�
 ```text
 Tick Started
 → World Modules: Before Actions
-→ Goal Selection
+→ Needs / Goal Selection
 → Plan Materialization
 → Intent Validation / Resolution
 → World Effects
@@ -29,11 +31,11 @@ Tick Started
 → Observation / Belief
 → Memory
 → Tick Completed
-→ Inspector
+→ Inspector / Web Inspector
 → Narrator
 ```
 
-Narrator 永远位于 Event Store 的只读下游。
+Narrator 和 Web Inspector 永远位于 Event Store 的只读下游。
 
 ## 安装
 
@@ -101,6 +103,26 @@ worldos-core narrate --actor witness --ticks 1
 
 角色视角不会返回世界哈希，也不会暴露该角色未观察到的事件。
 
+### 持久化世界
+
+```bash
+worldos-core world-init --db world.db
+worldos-core run --db world.db --ticks 100
+worldos-core pause --db world.db
+worldos-core step --db world.db --ticks 1
+worldos-core resume --db world.db
+worldos-core status --db world.db
+worldos-core branch --db world.db alternate --through-sequence 100
+```
+
+### Web Inspector
+
+```bash
+worldos-inspector --db world.db
+```
+
+默认打开 `http://127.0.0.1:8765`，提供世界地图、角色状态、目标与计划、信念与记忆、关系、事件时间线、分支对比和 Narrator 上下文。该服务默认只绑定本机，没有写入接口；对外暴露时应放在带认证的反向代理后面。
+
 ## Python 示例
 
 ```python
@@ -132,11 +154,11 @@ print(narrative.events)
 5. Knowledge、Belief、Memory 与客观世界事实彼此独立。
 6. Narrator 只读；Director 只能提交受规则约束的 Intent。
 7. 每个事件具有因果、来源、时间线和模式版本。
-8. CLI、Inspector 和 Narrator 都不能绕过事件管线修改世界。
+8. CLI、Inspector、Web Inspector 和 Narrator 都不能绕过事件管线修改世界。
 
 ## RFC
 
-`docs/rfcs/` 保存 WorldOS 的规范，包括核心宪法、事件存储、Tick、Intent、Knowledge、Memory、Planner、World Modules、Inspector、Narrator 与 CLI 验收边界。
+`docs/rfcs/` 保存 WorldOS 的规范，包括核心宪法、事件存储、Tick、Intent、Knowledge、Memory、Planner、World Modules、Inspector、Narrator、Runner、Web Inspector 与 CLI 验收边界。
 
 ## 目录
 
