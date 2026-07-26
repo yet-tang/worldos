@@ -15,7 +15,7 @@ from .world import replay_world
 
 LOCATIONS = ("farm", "market", "homes")
 ACTOR_IDS = tuple(f"resident-{index:02d}" for index in range(1, 13))
-ACTIVE_BEHAVIOR_TICKS = 100
+ACTIVE_BEHAVIOR_TICKS = 20
 CLOCK_BATCH_SIZE = 1_000
 
 
@@ -145,10 +145,12 @@ def _deactivate_residents(store: SQLiteEventStore, tick: int) -> None:
 
 
 def _advance_durable_clock(store: SQLiteEventStore, start_tick: int, target_tick: int) -> None:
+    history = store.read("main")
+    expected_sequence = len(history)
+    world = replay_world(history)
     current = start_tick
     while current < target_tick:
         end = min(target_tick, current + CLOCK_BATCH_SIZE)
-        history = store.read("main")
         candidates: list[NewEvent] = []
         for tick in range(current + 1, end + 1):
             candidates.extend(
@@ -175,16 +177,13 @@ def _advance_durable_clock(store: SQLiteEventStore, start_tick: int, target_tick
                     ),
                 ]
             )
-        store.append_batch(
-            "main", candidates, expected_sequence=len(history)
-        )
+        store.append_batch("main", candidates, expected_sequence=expected_sequence)
+        expected_sequence += len(candidates)
         current = end
 
-    history = store.read("main")
-    world = replay_world(history)
     store.save_snapshot(
         "main",
-        len(history),
+        expected_sequence,
         "world",
         world.model_dump(mode="json"),
     )
@@ -203,7 +202,8 @@ def _advance_to(
             runner.run(active_target - current)
             current = runner.status().last_completed_tick
         if current < target_tick:
-            _deactivate_residents(runner.store, current)
+            if current == active_target:
+                _deactivate_residents(runner.store, current)
             _advance_durable_clock(runner.store, current, target_tick)
 
 
