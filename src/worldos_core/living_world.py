@@ -145,9 +145,7 @@ def _deactivate_residents(store: SQLiteEventStore, tick: int) -> None:
 
 
 def _advance_durable_clock(store: SQLiteEventStore, start_tick: int, target_tick: int) -> None:
-    history = store.read("main")
-    expected_sequence = len(history)
-    world = replay_world(history)
+    expected_sequence = len(store.read("main"))
     current = start_tick
     while current < target_tick:
         end = min(target_tick, current + CLOCK_BATCH_SIZE)
@@ -181,6 +179,7 @@ def _advance_durable_clock(store: SQLiteEventStore, start_tick: int, target_tick
         expected_sequence += len(candidates)
         current = end
 
+    world = replay_world(store.read("main"))
     store.save_snapshot(
         "main",
         expected_sequence,
