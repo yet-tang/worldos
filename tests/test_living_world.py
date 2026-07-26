@@ -76,5 +76,8 @@ def test_persistent_kernel_survives_ten_thousand_ticks(tmp_path: Path) -> None:
     with SQLiteEventStore(tmp_path / "long-run.db") as store:
         history = store.read("main")
         assert sum(event.event_type == "tick.completed" for event in history) == 10_000
-        assert store.latest_snapshot("main", "world") is not None
-        replay_world(history)
+        snapshot = store.latest_snapshot("main", "world")
+        assert snapshot is not None
+        assert snapshot.sequence == len(history)
+        assert snapshot.state["tick"] == 10_000
+        assert replay_world(history).tick == snapshot.state["tick"]
