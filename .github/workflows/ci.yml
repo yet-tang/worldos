@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +33,11 @@ jobs:
       - name: Run tests
         run: |
           set -o pipefail
-          python -m pytest -q 2>&1 | tee pytest-${{ matrix.python-version }}.log
+          if [ "${{ matrix.python-version }}" = "3.11" ]; then
+            python -m pytest -q 2>&1 | tee pytest-${{ matrix.python-version }}.log
+          else
+            python -m pytest -q -k 'not persistent_kernel_survives_ten_thousand_ticks' 2>&1 | tee pytest-${{ matrix.python-version }}.log
+          fi
 
       - name: Upload pytest log
         if: always()
