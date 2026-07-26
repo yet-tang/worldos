@@ -11,6 +11,7 @@ dev = ["pytest>=8,<9"]
 [project.scripts]
 worldos-core = "worldos_core.cli:main"
 worldos-inspector = "worldos_core.web_inspector_cli:main"
+worldos-living = "worldos_core.living_world_cli:main"
 
 [build-system]
 requires = ["hatchling"]

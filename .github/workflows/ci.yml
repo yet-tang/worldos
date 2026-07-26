@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +33,7 @@ jobs:
       - name: Run tests
         run: |
           set -o pipefail
-          python -m pytest -q 2>&1 | tee pytest-${{ matrix.python-version }}.log
+          python -m pytest -q -k 'not persistent_kernel_survives_ten_thousand_ticks' 2>&1 | tee pytest-${{ matrix.python-version }}.log
 
       - name: Upload pytest log
         if: always()
@@ -47,3 +48,35 @@ jobs:
           worldos-core simulate --ticks 1 > /tmp/worldos-simulate.json
           worldos-core inspect traveler --ticks 1 > /tmp/worldos-inspect.json
           worldos-core narrate --actor witness --ticks 1 > /tmp/worldos-narrate.json
+          worldos-living init --db /tmp/worldos-living.db
+          worldos-living run --db /tmp/worldos-living.db --ticks 1 --restart-at 0 > /tmp/worldos-living.json
+
+  long-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run 10,000-tick persistence acceptance
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/test_living_world.py::test_persistent_kernel_survives_ten_thousand_ticks 2>&1 | tee pytest-long-run.log
+
+      - name: Upload long-run pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-long-run
+          path: pytest-long-run.log
+          if-no-files-found: error
