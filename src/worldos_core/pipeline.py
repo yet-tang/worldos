@@ -7,7 +7,7 @@ from .events import Event, NewEvent
 from .intents import Intent, ValidationIssue
 from .resolution import DeterministicResolver
 from .store import InMemoryEventStore
-from .world import replay_world
+from .world import WorldProjection, replay_world
 
 
 class IntentProcessingResult(BaseModel):
@@ -32,11 +32,18 @@ class IntentPipeline:
         if len(self._rules) != len(registered):
             raise ValueError("duplicate intent rule registration")
 
-    def process(self, timeline_id: str, intent: Intent, *, expected_sequence: int | None = None) -> IntentProcessingResult:
+    def process(
+        self,
+        timeline_id: str,
+        intent: Intent,
+        *,
+        expected_sequence: int | None = None,
+        state: WorldProjection | None = None,
+    ) -> IntentProcessingResult:
         intent_id = intent.deterministic_id()
         rule = self._rules.get(intent.intent_type)
-        state = replay_world(self.store.read(timeline_id))
-        context = ActionContext(timeline_id=timeline_id, state=state, resolver=self.resolver)
+        active_state = state if state is not None else replay_world(self.store.read(timeline_id))
+        context = ActionContext(timeline_id=timeline_id, state=active_state, resolver=self.resolver)
 
         if rule is None:
             issues = (ValidationIssue(code="unsupported_intent", message=f"no rule registered for intent type: {intent.intent_type}"),)
