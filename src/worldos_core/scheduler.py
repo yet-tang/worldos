@@ -68,6 +68,23 @@ class DeterministicTickEngine:
         self._projection_caches: dict[str, _ProjectionCache] = {}
 
     def run_tick(self, timeline_id: str, tick: int) -> TickResult:
+        begin = getattr(self.store, "begin_buffer", None)
+        commit = getattr(self.store, "commit_buffer", None)
+        rollback = getattr(self.store, "rollback_buffer", None)
+        if not callable(begin) or not callable(commit) or not callable(rollback):
+            return self._run_tick(timeline_id, tick)
+
+        begin(timeline_id)
+        try:
+            result = self._run_tick(timeline_id, tick)
+            commit(timeline_id)
+            return result
+        except BaseException:
+            rollback(timeline_id)
+            self.invalidate_cache(timeline_id)
+            raise
+
+    def _run_tick(self, timeline_id: str, tick: int) -> TickResult:
         if tick < 0:
             raise ValueError("tick must be non-negative")
         cache = self._cache(timeline_id)
@@ -80,14 +97,7 @@ class DeterministicTickEngine:
         self._append(
             cache,
             timeline_id,
-            [
-                NewEvent(
-                    tick=tick,
-                    phase="scheduler",
-                    event_type="tick.started",
-                    payload={"tick": tick},
-                )
-            ],
+            [NewEvent(tick=tick, phase="scheduler", event_type="tick.started", payload={"tick": tick})],
             committed,
             phase_counts,
         )
@@ -106,7 +116,6 @@ class DeterministicTickEngine:
             committed,
             phase_counts,
         )
-
         self._append(
             cache,
             timeline_id,
@@ -151,12 +160,7 @@ class DeterministicTickEngine:
                 state=cache.world,
             )
             intent_results.append(result)
-            self._apply_committed(
-                cache,
-                list(result.committed_events),
-                committed,
-                phase_counts,
-            )
+            self._apply_committed(cache, list(result.committed_events), committed, phase_counts)
             action_events.extend(
                 event
                 for event in result.committed_events
@@ -177,9 +181,7 @@ class DeterministicTickEngine:
                             actor_id=actor_id,
                             subject_ids=(actor_id,),
                             correlation_id=goal_id,
-                            caused_by=tuple(
-                                event.event_id for event in result.committed_events
-                            ),
+                            caused_by=tuple(event.event_id for event in result.committed_events),
                             payload={
                                 "goal_id": goal_id,
                                 "step_id": step_id,
@@ -205,9 +207,7 @@ class DeterministicTickEngine:
             phase_counts,
         )
         action_events.extend(
-            event
-            for event in committed
-            if event.tick == tick and event.phase == "module"
+            event for event in committed if event.tick == tick and event.phase == "module"
         )
 
         if action_events:
@@ -222,9 +222,7 @@ class DeterministicTickEngine:
         self._append(
             cache,
             timeline_id,
-            self.memory.derive(
-                self._knowledge_for_tick(cache.knowledge, tick), tick=tick
-            ),
+            self.memory.derive(self._knowledge_for_tick(cache.knowledge, tick), tick=tick),
             committed,
             phase_counts,
         )
@@ -238,22 +236,12 @@ class DeterministicTickEngine:
                 "tick": tick,
                 "actors": list(actors),
                 "modules": [module.name for module in self.modules.modules],
-                "accepted_intents": sum(
-                    1 for result in intent_results if result.accepted
-                ),
-                "rejected_intents": sum(
-                    1 for result in intent_results if not result.accepted
-                ),
+                "accepted_intents": sum(1 for result in intent_results if result.accepted),
+                "rejected_intents": sum(1 for result in intent_results if not result.accepted),
                 "event_count_before_completion": len(committed),
             },
         )
-        self._append(
-            cache,
-            timeline_id,
-            [completion],
-            committed,
-            phase_counts,
-        )
+        self._append(cache, timeline_id, [completion], committed, phase_counts)
         return TickResult(
             timeline_id=timeline_id,
             tick=tick,
