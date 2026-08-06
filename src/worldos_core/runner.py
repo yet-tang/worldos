@@ -224,11 +224,15 @@ class WorldRunner:
             event_type=event_type,
             payload=payload,
         )
-        return self.store.append_batch(
+        committed = self.store.append_batch(
             self.timeline_id,
             [event],
             expected_sequence=len(history),
         )[0]
+        # Control events are written outside the tick engine. Drop its cached history
+        # so the next tick observes the new sequence and preserves optimistic locking.
+        self.engine.invalidate_cache(self.timeline_id)
+        return committed
 
     @staticmethod
     def _last_completed_tick(history: list[Event]) -> int:
