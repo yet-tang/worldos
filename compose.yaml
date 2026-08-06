@@ -1,0 +1,60 @@
+name: worldos
+
+x-worldos-common: &worldos-common
+  image: ${WORLDOS_IMAGE:-ghcr.io/yet-tang/worldos:latest}
+  user: "${WORLDOS_UID:-1000}:${WORLDOS_GID:-1000}"
+  environment:
+    WORLDOS_DB: /data/world.db
+    WORLDOS_BACKUP_DIR: /backups
+  volumes:
+    - ${WORLDOS_DATA_DIR:-./data}:/data
+    - ${WORLDOS_BACKUP_DIR:-./backups}:/backups
+  restart: "no"
+
+services:
+  inspector:
+    <<: *worldos-common
+    command: ["inspector"]
+    environment:
+      WORLDOS_DB: /data/world.db
+      WORLDOS_HOST: 0.0.0.0
+      WORLDOS_PORT: 8765
+      WORLDOS_AUTO_INIT: ${WORLDOS_AUTO_INIT:-false}
+    expose:
+      - "8765"
+    networks:
+      - worldos-internal
+    restart: unless-stopped
+
+  proxy:
+    image: nginx:1.27-alpine
+    depends_on:
+      inspector:
+        condition: service_healthy
+    ports:
+      - "${WORLDOS_HTTP_BIND:-127.0.0.1:8080}:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${WORLDOS_HTPASSWD_FILE:-./secrets/htpasswd}:/etc/nginx/htpasswd:ro
+    networks:
+      - worldos-internal
+    restart: unless-stopped
+
+  init:
+    <<: *worldos-common
+    command: ["init"]
+    profiles: ["admin"]
+
+  run:
+    <<: *worldos-common
+    command: ["run", "--ticks", "${WORLDOS_RUN_TICKS:-100}"]
+    profiles: ["admin"]
+
+  backup:
+    <<: *worldos-common
+    command: ["backup"]
+    profiles: ["admin"]
+
+networks:
+  worldos-internal:
+    internal: true
