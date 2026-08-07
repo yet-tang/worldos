@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -89,31 +88,49 @@ class MemoryEngine:
         )
 
 
+MEMORY_EVENT_TYPES = {"memory.recorded", "memory.forgotten"}
+
+
 def reduce_memory(state: MemoryProjection, event: Event, policy: MemoryPolicy | None = None) -> MemoryProjection:
-    next_state = state.model_copy(deep=True)
+    """Apply a memory event with owner-level copy-on-write semantics."""
+    if event.event_type not in MEMORY_EVENT_TYPES:
+        return state
+
     active_policy = policy or MemoryPolicy()
+    next_state = state.model_copy(deep=False)
+    next_state.applied_event_ids = [*state.applied_event_ids, event.event_id]
+    next_state.records_by_owner = dict(state.records_by_owner)
+
     if event.event_type == "memory.recorded":
         record = MemoryRecord(**event.payload)
-        owner_records = next_state.records_by_owner.setdefault(record.owner_id, {})
+        owner_records = dict(state.records_by_owner.get(record.owner_id, {}))
         owner_records[record.memory_id] = record
+        next_state.records_by_owner[record.owner_id] = owner_records
+
         if record.kind == "working":
-            order = next_state.working_order.setdefault(record.owner_id, [])
+            next_state.working_order = dict(state.working_order)
+            order = list(state.working_order.get(record.owner_id, []))
             if record.memory_id in order:
                 order.remove(record.memory_id)
             order.append(record.memory_id)
             while len(order) > active_policy.working_capacity:
                 expired_id = order.pop(0)
-                if expired_id in owner_records:
-                    owner_records[expired_id].active = False
-    elif event.event_type == "memory.forgotten":
-        owner_id = event.payload["owner_id"]
-        memory_id = event.payload["memory_id"]
-        record = next_state.records_by_owner.get(owner_id, {}).get(memory_id)
-        if record is not None:
-            record.active = False
-    else:
+                expired = owner_records.get(expired_id)
+                if expired is not None and expired.active:
+                    owner_records[expired_id] = expired.model_copy(update={"active": False})
+            next_state.working_order[record.owner_id] = order
+        else:
+            next_state.working_order = state.working_order
         return next_state
-    next_state.applied_event_ids.append(event.event_id)
+
+    owner_id = event.payload["owner_id"]
+    memory_id = event.payload["memory_id"]
+    owner_records = dict(state.records_by_owner.get(owner_id, {}))
+    record = owner_records.get(memory_id)
+    if record is not None and record.active:
+        owner_records[memory_id] = record.model_copy(update={"active": False})
+    next_state.records_by_owner[owner_id] = owner_records
+    next_state.working_order = state.working_order
     return next_state
 
 
