@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -36,17 +35,32 @@ class KnowledgeProjection(BaseModel):
     applied_event_ids: list[str] = Field(default_factory=list)
 
 
+KNOWLEDGE_EVENT_TYPES = {"observation.created", "belief.updated"}
+
+
 def reduce_knowledge(state: KnowledgeProjection, event: Event) -> KnowledgeProjection:
-    next_state = state.model_copy(deep=True)
+    """Apply a knowledge event with structural sharing.
+
+    Unrelated events return the existing immutable-by-convention projection. Relevant
+    events copy only the top-level container and the observer bucket being changed.
+    """
+    if event.event_type not in KNOWLEDGE_EVENT_TYPES:
+        return state
+
+    next_state = state.model_copy(deep=False)
+    next_state.applied_event_ids = [*state.applied_event_ids, event.event_id]
+
     if event.event_type == "observation.created":
         observation = Observation(**event.payload)
+        next_state.observations = dict(state.observations)
         next_state.observations[observation.observation_id] = observation
-    elif event.event_type == "belief.updated":
-        belief = Belief(**event.payload)
-        next_state.beliefs_by_observer.setdefault(belief.observer_id, {})[belief.belief_id] = belief
-    else:
         return next_state
-    next_state.applied_event_ids.append(event.event_id)
+
+    belief = Belief(**event.payload)
+    next_state.beliefs_by_observer = dict(state.beliefs_by_observer)
+    observer_beliefs = dict(state.beliefs_by_observer.get(belief.observer_id, {}))
+    observer_beliefs[belief.belief_id] = belief
+    next_state.beliefs_by_observer[belief.observer_id] = observer_beliefs
     return next_state
 
 
