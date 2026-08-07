@@ -22,6 +22,12 @@ class StoredSnapshot:
     state_hash: str
 
 
+@dataclass
+class _BufferedBatch:
+    base_sequence: int
+    events: list[Event]
+
+
 class SQLiteEventStore:
     """Durable Event Store with atomic batches, branches and projection snapshots."""
 
@@ -37,6 +43,7 @@ class SQLiteEventStore:
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA synchronous = FULL")
+        self._buffers: dict[str, _BufferedBatch] = {}
         self._migrate()
 
     @property
@@ -46,6 +53,8 @@ class SQLiteEventStore:
         return self._connection
 
     def close(self) -> None:
+        if self._buffers:
+            raise EventStoreError("cannot close event store with uncommitted buffered events")
         if self._connection is not None:
             self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._connection.close()
@@ -68,6 +77,45 @@ class SQLiteEventStore:
             raise
         else:
             connection.execute("COMMIT")
+
+    def begin_buffer(self, timeline_id: str) -> None:
+        if self._buffers:
+            raise EventStoreError("only one buffered timeline is supported per store")
+        if self._timeline_row(timeline_id) is None:
+            raise EventStoreError(f"unknown timeline: {timeline_id}")
+        self._buffers[timeline_id] = _BufferedBatch(
+            base_sequence=self._visible_count(timeline_id),
+            events=[],
+        )
+
+    def commit_buffer(self, timeline_id: str) -> None:
+        try:
+            buffer = self._buffers[timeline_id]
+        except KeyError as exc:
+            raise EventStoreError(f"no active buffer for timeline: {timeline_id}") from exc
+        with self._transaction() as connection:
+            visible_count = self._visible_count(timeline_id, connection)
+            if visible_count != buffer.base_sequence:
+                raise EventStoreError(
+                    "optimistic concurrency conflict while committing buffered tick: "
+                    f"expected {buffer.base_sequence}, got {visible_count}"
+                )
+            connection.executemany(
+                "INSERT INTO events VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        timeline_id,
+                        event.sequence,
+                        event.event_id,
+                        event.model_dump_json(),
+                    )
+                    for event in buffer.events
+                ],
+            )
+        del self._buffers[timeline_id]
+
+    def rollback_buffer(self, timeline_id: str) -> None:
+        self._buffers.pop(timeline_id, None)
 
     def _migrate(self) -> None:
         self.connection.execute(
@@ -121,6 +169,8 @@ class SQLiteEventStore:
         parent_timeline_id: str = "main",
         parent_through_sequence: int | None = None,
     ) -> Timeline:
+        if self._buffers:
+            raise EventStoreError("cannot create timeline while a tick buffer is active")
         with self._transaction() as connection:
             if self._timeline_row(timeline_id, connection) is not None:
                 raise EventStoreError(f"timeline already exists: {timeline_id}")
@@ -148,6 +198,17 @@ class SQLiteEventStore:
         expected_sequence: int | None = None,
     ) -> list[Event]:
         candidates = list(events)
+        buffer = self._buffers.get(timeline_id)
+        if buffer is not None:
+            visible_count = buffer.base_sequence + len(buffer.events)
+            if expected_sequence is not None and expected_sequence != visible_count:
+                raise EventStoreError(
+                    f"optimistic concurrency conflict: expected {expected_sequence}, got {visible_count}"
+                )
+            committed = self._materialize(timeline_id, visible_count, candidates)
+            buffer.events.extend(committed)
+            return committed
+
         with self._transaction() as connection:
             if self._timeline_row(timeline_id, connection) is None:
                 raise EventStoreError(f"unknown timeline: {timeline_id}")
@@ -156,21 +217,39 @@ class SQLiteEventStore:
                 raise EventStoreError(
                     f"optimistic concurrency conflict: expected {expected_sequence}, got {visible_count}"
                 )
-            committed: list[Event] = []
-            for offset, candidate in enumerate(candidates, start=1):
-                sequence = visible_count + offset
-                event_id = self._event_id(timeline_id, sequence, candidate)
-                event = Event(
+            committed = self._materialize(timeline_id, visible_count, candidates)
+            connection.executemany(
+                "INSERT INTO events VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        timeline_id,
+                        event.sequence,
+                        event.event_id,
+                        event.model_dump_json(),
+                    )
+                    for event in committed
+                ],
+            )
+        return committed
+
+    def _materialize(
+        self,
+        timeline_id: str,
+        visible_count: int,
+        candidates: list[NewEvent],
+    ) -> list[Event]:
+        committed: list[Event] = []
+        for offset, candidate in enumerate(candidates, start=1):
+            sequence = visible_count + offset
+            event_id = self._event_id(timeline_id, sequence, candidate)
+            committed.append(
+                Event(
                     **candidate.model_dump(),
                     event_id=event_id,
                     timeline_id=timeline_id,
                     sequence=sequence,
                 )
-                connection.execute(
-                    "INSERT INTO events VALUES (?, ?, ?, ?)",
-                    (timeline_id, sequence, event_id, event.model_dump_json()),
-                )
-                committed.append(event)
+            )
         return committed
 
     def read(self, timeline_id: str, through_sequence: int | None = None) -> list[Event]:
@@ -198,6 +277,8 @@ class SQLiteEventStore:
         projection: str,
         state: Mapping[str, Any],
     ) -> StoredSnapshot:
+        if self._buffers:
+            raise EventStoreError("cannot save snapshot while a tick buffer is active")
         visible_count = self._visible_count(timeline_id)
         if sequence < 0 or sequence > visible_count:
             raise EventStoreError("snapshot sequence is outside visible history")
