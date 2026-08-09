@@ -5,12 +5,22 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .events import Event
-from .knowledge import Belief, Observation, replay_knowledge
-from .memory import MemoryRecord, replay_memory
-from .planning import Goal, PlanStep, replay_planning
+from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledge
+from .memory import MemoryProjection, MemoryRecord, replay_memory
+from .planning import Goal, PlannerProjection, PlanStep, replay_planning
 from .store import InMemoryEventStore
 from .timeline import Timeline
 from .world import EntityProjection, WorldProjection, replay_world
+
+
+class ProjectionBundle(BaseModel):
+    timeline_id: str
+    through_sequence: int
+    events: list[Event]
+    world: WorldProjection
+    knowledge: KnowledgeProjection
+    memory: MemoryProjection
+    planning: PlannerProjection
 
 
 class TimelineSnapshot(BaseModel):
@@ -32,10 +42,27 @@ class ActorDebugView(BaseModel):
 
 
 class WorldInspector:
-    """Read-only, replay-backed debugging facade over one event store."""
+    """Read-only debugging facade that builds each projection bundle once per request."""
 
     def __init__(self, store: InMemoryEventStore) -> None:
         self._store = store
+
+    def bundle(
+        self,
+        timeline_id: str = "main",
+        *,
+        through_sequence: int | None = None,
+    ) -> ProjectionBundle:
+        events = self._store.read(timeline_id, through_sequence)
+        return ProjectionBundle(
+            timeline_id=timeline_id,
+            through_sequence=len(events),
+            events=events,
+            world=replay_world(events),
+            knowledge=replay_knowledge(events),
+            memory=replay_memory(events),
+            planning=replay_planning(events),
+        )
 
     def events(
         self,
@@ -59,26 +86,43 @@ class WorldInspector:
             and (correlation_id is None or event.correlation_id == correlation_id)
         ]
 
-    def snapshot(self, timeline_id: str = "main", *, through_sequence: int | None = None) -> TimelineSnapshot:
-        events = self._store.read(timeline_id, through_sequence)
-        world = replay_world(events)
+    def snapshot(
+        self,
+        timeline_id: str = "main",
+        *,
+        through_sequence: int | None = None,
+        bundle: ProjectionBundle | None = None,
+    ) -> TimelineSnapshot:
+        projections = bundle or self.bundle(timeline_id, through_sequence=through_sequence)
         return TimelineSnapshot(
             timeline=self._store.timeline(timeline_id),
-            through_sequence=len(events),
-            world=world,
-            event_count=len(events),
-            world_hash=world.canonical_hash(),
+            through_sequence=projections.through_sequence,
+            world=projections.world,
+            event_count=projections.through_sequence,
+            world_hash=projections.world.canonical_hash(),
         )
 
-    def entity(self, entity_id: str, timeline_id: str = "main", *, through_sequence: int | None = None) -> EntityProjection | None:
+    def entity(
+        self,
+        entity_id: str,
+        timeline_id: str = "main",
+        *,
+        through_sequence: int | None = None,
+    ) -> EntityProjection | None:
         return self.snapshot(timeline_id, through_sequence=through_sequence).world.entities.get(entity_id)
 
-    def actor(self, actor_id: str, timeline_id: str = "main", *, through_sequence: int | None = None) -> ActorDebugView:
-        events = self._store.read(timeline_id, through_sequence)
-        world = replay_world(events)
-        knowledge = replay_knowledge(events)
-        memory = replay_memory(events)
-        planning = replay_planning(events)
+    def actor(
+        self,
+        actor_id: str,
+        timeline_id: str = "main",
+        *,
+        through_sequence: int | None = None,
+        bundle: ProjectionBundle | None = None,
+    ) -> ActorDebugView:
+        projections = bundle or self.bundle(timeline_id, through_sequence=through_sequence)
+        knowledge = projections.knowledge
+        memory = projections.memory
+        planning = projections.planning
 
         observations = sorted(
             [item for item in knowledge.observations.values() if item.observer_id == actor_id],
@@ -95,12 +139,16 @@ class WorldInspector:
         )
         goal_ids = {goal.goal_id for goal in goals}
         steps = sorted(
-            [step for goal_id in goal_ids for step in planning.steps_by_goal.get(goal_id, {}).values()],
+            [
+                step
+                for goal_id in goal_ids
+                for step in planning.steps_by_goal.get(goal_id, {}).values()
+            ],
             key=lambda item: (item.goal_id, item.ordinal, item.step_id),
         )
         return ActorDebugView(
             actor_id=actor_id,
-            entity=world.entities.get(actor_id),
+            entity=projections.world.entities.get(actor_id),
             observations=observations,
             beliefs=beliefs,
             memories=memories,
