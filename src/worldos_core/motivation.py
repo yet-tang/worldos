@@ -40,8 +40,9 @@ class MotivationEngine:
             if entity.active and entity.kind == "character"
         }
         for owner_id, actor in actors.items():
-            personality = self._profile(actor.components.get("personality"), owner_id)
-            drives = self._drives(actor.components.get("drives"), owner_id)
+            profile_key = f"{world.flags.get('seed', 'worldos')}:{owner_id}"
+            personality = self._profile(actor.components.get("personality"), profile_key)
+            drives = self._drives(actor.components.get("drives"), profile_key)
             if "personality" not in actor.components:
                 events.append(
                     NewEvent(
@@ -65,12 +66,12 @@ class MotivationEngine:
                     )
                 )
 
-            if not self._due(owner_id, tick) or self._survival_is_urgent(actor):
+            if not self._due(profile_key, tick) or self._survival_is_urgent(actor):
                 continue
             if any(goal.parameters.get("source_motivation") for goal in planning.active_goals(owner_id)):
                 continue
 
-            candidates = self._candidates(owner_id, actor, actors, personality, drives)
+            candidates = self._candidates(owner_id, actor, actors, personality, drives, profile_key)
             if not candidates:
                 continue
             candidates.sort(
@@ -139,6 +140,7 @@ class MotivationEngine:
         actors: dict[str, EntityProjection],
         personality: dict[str, int],
         drives: dict[str, int],
+        profile_key: str,
     ) -> list[MotivationCandidate]:
         components = actor.components
         relationships = components.get("relationships", {})
@@ -235,10 +237,29 @@ class MotivationEngine:
                         "与对方存在负面关系，并希望维护地位或边界",
                     )
                 )
+
+        if drives["curiosity"] >= 58 and personality["risk_tolerance"] >= 38:
+            destination = self._exploration_target(owner_id, actor, actors, profile_key)
+            if destination is not None:
+                priority = self._clamp(
+                    24 + drives["curiosity"] // 3 + personality["risk_tolerance"] // 6,
+                    1,
+                    58,
+                )
+                candidates.append(
+                    MotivationCandidate(
+                        owner_id,
+                        "curiosity",
+                        "explore_location",
+                        priority,
+                        {"location_id": destination},
+                        "对别处正在发生的事情感到好奇，想去看看",
+                    )
+                )
         return candidates
 
-    def _due(self, owner_id: str, tick: int) -> bool:
-        digest = hashlib.sha256(owner_id.encode("utf-8")).digest()
+    def _due(self, profile_key: str, tick: int) -> bool:
+        digest = hashlib.sha256(profile_key.encode("utf-8")).digest()
         return tick % self.cadence == digest[0] % self.cadence
 
     @staticmethod
@@ -262,17 +283,17 @@ class MotivationEngine:
         )
 
     @staticmethod
-    def _stable_traits(owner_id: str, channel: str, names: tuple[str, ...]) -> dict[str, int]:
-        digest = hashlib.sha256(f"{owner_id}:{channel}".encode("utf-8")).digest()
+    def _stable_traits(profile_key: str, channel: str, names: tuple[str, ...]) -> dict[str, int]:
+        digest = hashlib.sha256(f"{profile_key}:{channel}".encode("utf-8")).digest()
         return {
             name: 25 + digest[index % len(digest)] % 61
             for index, name in enumerate(names)
         }
 
     @staticmethod
-    def _profile(raw: Any, owner_id: str) -> dict[str, int]:
+    def _profile(raw: Any, profile_key: str) -> dict[str, int]:
         defaults = MotivationEngine._stable_traits(
-            owner_id,
+            profile_key,
             "personality",
             ("sociability", "generosity", "assertiveness", "risk_tolerance"),
         )
@@ -283,9 +304,9 @@ class MotivationEngine:
         }
 
     @staticmethod
-    def _drives(raw: Any, owner_id: str) -> dict[str, int]:
+    def _drives(raw: Any, profile_key: str) -> dict[str, int]:
         defaults = MotivationEngine._stable_traits(
-            owner_id,
+            profile_key,
             "drives",
             ("security", "belonging", "status", "wealth", "curiosity"),
         )
@@ -349,6 +370,27 @@ class MotivationEngine:
             ranked.append((score, actor_id))
         ranked.sort()
         return ranked[0][1] if ranked else None
+
+    @staticmethod
+    def _exploration_target(
+        owner_id: str,
+        actor: EntityProjection,
+        actors: dict[str, EntityProjection],
+        profile_key: str,
+    ) -> str | None:
+        current = actor.components.get("position", {}).get("location_id")
+        locations = sorted(
+            {
+                other.components.get("position", {}).get("location_id")
+                for actor_id, other in actors.items()
+                if actor_id != owner_id and other.components.get("position", {}).get("location_id")
+            }
+            - {current}
+        )
+        if not locations:
+            return None
+        digest = hashlib.sha256(f"{profile_key}:explore".encode("utf-8")).digest()
+        return locations[digest[0] % len(locations)]
 
     @staticmethod
     def _goal_for(candidate: MotivationCandidate, tick: int) -> Goal:
