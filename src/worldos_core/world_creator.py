@@ -71,41 +71,48 @@ class WorldTemplate:
 
 TEMPLATES: dict[str, WorldTemplate] = {
     "agrarian_town": WorldTemplate(
-        location_names=("farm", "market", "homes", "temple", "workshop", "river", "east_gate", "granary"),
+        location_names=("农田", "集市", "民居", "寺庙", "工坊", "河畔", "东门", "粮仓"),
         jobs=(("food", 2), ("food", 1), ("wood", 2), ("cloth", 1), ("tools", 1), ("grain", 2)),
         default_era="agrarian",
         starting_resource="food",
-        rumor="the old well may be running dry",
+        rumor="老井的水位可能正在下降",
     ),
     "modern_community": WorldTemplate(
-        location_names=("apartments", "office", "mall", "school", "clinic", "park", "station", "cafe"),
+        location_names=("公寓", "写字楼", "商场", "学校", "诊所", "公园", "车站", "咖啡馆"),
         jobs=(("credits", 2), ("food", 1), ("services", 2), ("goods", 1), ("knowledge", 1)),
         default_era="modern",
         starting_resource="food",
-        rumor="a large employer may leave the district",
+        rumor="社区里最大的雇主可能准备搬离这里",
     ),
     "island_survival": WorldTemplate(
-        location_names=("beach", "camp", "forest", "spring", "cliffs", "lagoon", "cave", "wreck"),
+        location_names=("海滩", "营地", "森林", "泉眼", "悬崖", "泻湖", "山洞", "沉船"),
         jobs=(("food", 2), ("wood", 2), ("water", 2), ("tools", 1)),
         default_era="primitive",
         starting_resource="food",
-        rumor="a storm may reach the island soon",
+        rumor="一场风暴可能很快抵达这座岛",
     ),
     "mars_colony": WorldTemplate(
-        location_names=("habitat", "hydroponics", "reactor", "lab", "airlock", "mine", "medbay", "command"),
+        location_names=("居住舱", "水培舱", "反应堆", "实验室", "气闸舱", "矿区", "医疗舱", "指挥中心"),
         jobs=(("food", 1), ("oxygen", 2), ("energy", 2), ("parts", 1), ("data", 1)),
         default_era="future",
         starting_resource="food",
-        rumor="oxygen reserve telemetry may be inaccurate",
+        rumor="氧气储备的遥测数据可能并不准确",
     ),
     "custom": WorldTemplate(
-        location_names=("center", "north", "south", "east", "west", "commons", "workshop", "outpost"),
+        location_names=("中心区", "北区", "南区", "东区", "西区", "公共区", "工坊", "前哨站"),
         jobs=(("food", 1), ("wood", 1), ("tools", 1), ("services", 1)),
         default_era="modern",
         starting_resource="food",
-        rumor="something in the local balance is beginning to change",
+        rumor="当地原本稳定的平衡正在悄悄发生变化",
     ),
 }
+
+_SURNAMES = (
+    "沈", "顾", "林", "陆", "陈", "周", "江", "许", "苏", "宋",
+    "叶", "唐", "谢", "温", "秦", "程", "方", "何", "韩", "赵",
+)
+_GIVEN_FIRST = ("清", "明", "知", "景", "书", "若", "安", "云", "言", "时")
+_GIVEN_SECOND = ("和", "川", "远", "宁", "舟", "禾", "夏", "秋", "衡", "月")
 
 
 def _stable_rng(seed: str) -> random.Random:
@@ -125,6 +132,14 @@ def make_world_id(config: WorldConfig) -> str:
     return f"{_slug(config.name)}-{fingerprint}"
 
 
+def _chinese_actor_name(index: int, seed: str) -> str:
+    digest = hashlib.sha256(f"{seed}:{index}".encode("utf-8")).digest()
+    surname = _SURNAMES[digest[0] % len(_SURNAMES)]
+    first = _GIVEN_FIRST[digest[1] % len(_GIVEN_FIRST)]
+    second = _GIVEN_SECOND[digest[2] % len(_GIVEN_SECOND)]
+    return f"{surname}{first}{second}"
+
+
 def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None) -> list[NewEvent]:
     """Compile a WorldConfig into the canonical event-sourced bootstrap representation."""
 
@@ -134,7 +149,7 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
 
     location_names = list(template.location_names[: config.location_count])
     while len(location_names) < config.location_count:
-        location_names.append(f"region-{len(location_names) + 1:02d}")
+        location_names.append(f"区域{len(location_names) + 1:02d}")
 
     events: list[NewEvent] = [
         NewEvent(
@@ -147,7 +162,7 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
                     "world_name": config.name,
                     "world_type": config.world_type,
                     "era": config.era,
-                    "scenario_version": 2,
+                    "scenario_version": 3,
                     "seed": config.seed,
                     "resource_abundance": config.resource_abundance,
                     "social_stability": config.social_stability,
@@ -180,7 +195,7 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
     stress = max(0, 100 - config.resource_abundance)
     instability = max(0, 100 - config.social_stability)
 
-    actor_ids = [f"resident-{index:03d}" for index in range(1, config.population + 1)]
+    actor_ids = [f"人物-{index:03d}" for index in range(1, config.population + 1)]
     components_by_actor: dict[str, dict[str, Any]] = {}
     for index, actor_id in enumerate(actor_ids):
         location_id = location_names[index % len(location_names)]
@@ -192,7 +207,7 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
             template.starting_resource: max(1, base_inventory // 2 + 1),
         }
         components_by_actor[actor_id] = {
-            "identity": {"name": f"Resident {index + 1}", "home": location_names[0]},
+            "identity": {"name": _chinese_actor_name(index + 1, config.seed), "home": location_names[0]},
             "position": {"location_id": location_id},
             "health": {"current": 100, "maximum": 100},
             "needs": {"hunger": hunger, "fatigue": fatigue},
@@ -209,8 +224,6 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
     if actor_ids:
         components_by_actor[actor_ids[0]]["rumors"] = [template.rumor]
 
-    # Seed a sparse social graph. High stability starts with more positive ties;
-    # low stability creates weaker or negative ties without requiring a separate reducer.
     relationship_span = min(3, max(1, config.population - 1))
     for index, actor_id in enumerate(actor_ids):
         relationships: dict[str, int] = {}
@@ -240,12 +253,12 @@ def compile_bootstrap_events(config: WorldConfig, *, world_id: str | None = None
             "severity": max(10, 60 - config.social_stability // 2),
         }
     if "external_threat" in config.conflicts and actor_ids:
-        components_by_actor[actor_ids[0]]["rumors"].append("an external threat has been reported near the boundary")
+        components_by_actor[actor_ids[0]]["rumors"].append("边界附近出现了外部威胁的消息")
     if "disease" in config.conflicts and actor_ids:
         affected = actor_ids[: max(1, len(actor_ids) // 10)]
         for actor_id in affected:
             components_by_actor[actor_id]["health"] = {"current": 85, "maximum": 100}
-            components_by_actor[actor_id]["condition"] = {"name": "initial_illness", "severity": 15}
+            components_by_actor[actor_id]["condition"] = {"name": "初始疾病", "severity": 15}
 
     for actor_id in actor_ids:
         events.append(
@@ -323,6 +336,34 @@ class WorldCatalog:
         worlds.append(descriptor)
         self._save_catalog(worlds)
         return descriptor
+
+    def delete(self, world_id: str) -> WorldDescriptor:
+        if world_id == "first-living-world":
+            raise ValueError("开发样板世界不能从页面删除")
+
+        worlds = self._load_catalog()
+        target = next((item for item in worlds if item.world_id == world_id), None)
+        if target is None:
+            raise KeyError(f"unknown world: {world_id}")
+
+        database_path = Path(target.database_path)
+        worlds_root = self.worlds_dir.resolve()
+        try:
+            resolved = database_path.resolve()
+        except FileNotFoundError:
+            resolved = database_path.absolute()
+        if resolved.parent != worlds_root or resolved.suffix != ".db":
+            raise ValueError("拒绝删除世界目录之外的数据文件")
+
+        remaining = [item for item in worlds if item.world_id != world_id]
+        self._save_catalog(remaining)
+        for candidate in (
+            database_path,
+            Path(str(database_path) + "-wal"),
+            Path(str(database_path) + "-shm"),
+        ):
+            candidate.unlink(missing_ok=True)
+        return target
 
     def _load_catalog(self) -> list[WorldDescriptor]:
         if not self.catalog_path.exists():

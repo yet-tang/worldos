@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from worldos_core.runner import WorldRunner
 from worldos_core.sqlite_store import SQLiteEventStore
 from worldos_core.world import replay_world
@@ -29,6 +33,18 @@ def test_bootstrap_compiler_is_deterministic():
     assert first[0]["payload"]["flags"]["world_name"] == "Linan Town"
     assert sum(1 for event in first if event["payload"].get("kind") == "character") == 8
     assert sum(1 for event in first if event["payload"].get("kind") == "location") == 4
+
+
+def test_bootstrap_uses_chinese_visible_world_content():
+    events = compile_bootstrap_events(make_config(population=3, location_count=6))
+    locations = [event for event in events if event.payload.get("kind") == "location"]
+    actors = [event for event in events if event.payload.get("kind") == "character"]
+
+    assert [event.subject_ids[0] for event in locations] == ["农田", "集市", "民居", "寺庙", "工坊", "河畔"]
+    assert all(event.subject_ids[0].startswith("人物-") for event in actors)
+    assert all("Resident" not in event.payload["components"]["identity"]["name"] for event in actors)
+    assert actors[0].payload["components"]["identity"]["home"] == "农田"
+    assert actors[0].payload["components"]["rumors"] == ["老井的水位可能正在下降"]
 
 
 def test_different_seed_changes_initial_actor_state():
@@ -95,3 +111,34 @@ def test_duplicate_configuration_gets_unique_world_id(tmp_path):
     second = catalog.create(make_config())
 
     assert second.world_id == first.world_id + "-2"
+
+
+def test_catalog_deletes_created_world_and_sidecars(tmp_path):
+    catalog = WorldCatalog(tmp_path)
+    keep = catalog.create(make_config(name="保留世界", seed="keep"))
+    target = catalog.create(make_config(name="删除世界", seed="delete"))
+    db_path = Path(target.database_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"wal")
+    shm_path.write_bytes(b"shm")
+
+    deleted = catalog.delete(target.world_id)
+
+    assert deleted.world_id == target.world_id
+    assert not db_path.exists()
+    assert not wal_path.exists()
+    assert not shm_path.exists()
+    assert [world.world_id for world in catalog.list_worlds()] == [keep.world_id]
+
+
+def test_catalog_refuses_to_delete_legacy_world(tmp_path):
+    legacy = tmp_path / "world.db"
+    with SQLiteEventStore(legacy) as store:
+        store.append_batch("main", compile_bootstrap_events(make_config(name="Legacy")), expected_sequence=0)
+
+    catalog = WorldCatalog(tmp_path, legacy_db_path=legacy)
+    with pytest.raises(ValueError, match="开发样板世界"):
+        catalog.delete("first-living-world")
+
+    assert legacy.exists()
