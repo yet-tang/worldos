@@ -8,6 +8,7 @@ from .events import Event
 from .knowledge import Belief, KnowledgeProjection, Observation, replay_knowledge
 from .memory import MemoryProjection, MemoryRecord, replay_memory
 from .planning import Goal, PlannerProjection, PlanStep, replay_planning
+from .social import SocialBond, SocialObligation, SocialProjection, replay_social
 from .store import InMemoryEventStore
 from .timeline import Timeline
 from .world import EntityProjection, WorldProjection, replay_world
@@ -21,6 +22,7 @@ class ProjectionBundle(BaseModel):
     knowledge: KnowledgeProjection
     memory: MemoryProjection
     planning: PlannerProjection
+    social: SocialProjection
 
 
 class TimelineSnapshot(BaseModel):
@@ -39,6 +41,9 @@ class ActorDebugView(BaseModel):
     memories: list[MemoryRecord] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
     plan_steps: list[PlanStep] = Field(default_factory=list)
+    social_bonds: list[SocialBond] = Field(default_factory=list)
+    obligations_as_debtor: list[SocialObligation] = Field(default_factory=list)
+    obligations_as_creditor: list[SocialObligation] = Field(default_factory=list)
 
 
 class WorldInspector:
@@ -62,6 +67,7 @@ class WorldInspector:
             knowledge=replay_knowledge(events),
             memory=replay_memory(events),
             planning=replay_planning(events),
+            social=replay_social(events),
         )
 
     def events(
@@ -123,6 +129,7 @@ class WorldInspector:
         knowledge = projections.knowledge
         memory = projections.memory
         planning = projections.planning
+        social = projections.social
 
         observations = sorted(
             [item for item in knowledge.observations.values() if item.observer_id == actor_id],
@@ -146,6 +153,18 @@ class WorldInspector:
             ],
             key=lambda item: (item.goal_id, item.ordinal, item.step_id),
         )
+        social_bonds = sorted(
+            social.bonds_by_actor.get(actor_id, {}).values(),
+            key=lambda item: (item.label(), -item.trust, -item.affinity, item.other_id),
+        )
+        obligations_as_debtor = sorted(
+            [item for item in social.obligations.values() if item.debtor_id == actor_id],
+            key=lambda item: (item.status != "open", item.due_tick, item.obligation_id),
+        )
+        obligations_as_creditor = sorted(
+            [item for item in social.obligations.values() if item.creditor_id == actor_id],
+            key=lambda item: (item.status != "open", item.due_tick, item.obligation_id),
+        )
         return ActorDebugView(
             actor_id=actor_id,
             entity=projections.world.entities.get(actor_id),
@@ -154,6 +173,9 @@ class WorldInspector:
             memories=memories,
             goals=goals,
             plan_steps=steps,
+            social_bonds=social_bonds,
+            obligations_as_debtor=obligations_as_debtor,
+            obligations_as_creditor=obligations_as_creditor,
         )
 
     def explain_event(self, event_id: str, timeline_id: str = "main") -> dict[str, Any] | None:
