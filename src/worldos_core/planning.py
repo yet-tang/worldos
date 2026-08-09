@@ -106,7 +106,7 @@ class GoalPlanner:
         )
 
     def _steps_for(self, goal: Goal, context: PlanningContext) -> list[PlanStep]:
-        if goal.goal_type == "reach_location":
+        if goal.goal_type in {"reach_location", "explore_location"}:
             destination = goal.parameters["location_id"]
             return [self._step(goal, 0, "move", {"to_location_id": destination})]
         if goal.goal_type == "defeat_entity":
