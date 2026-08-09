@@ -11,7 +11,17 @@ from .world import WorldProjection, replay_world
 class PerceptionEngine:
     """Derives observer-specific observations and beliefs from committed world events."""
 
-    AUDIBLE_EVENTS = {"attack.attempted", "attack.resolved", "health.changed"}
+    AUDIBLE_EVENTS = {
+        "attack.attempted",
+        "attack.resolved",
+        "health.changed",
+        "social.interacted",
+        "social.rumor_shared",
+        "social.helped",
+        "social.requested",
+        "social.request_resolved",
+        "social.confronted",
+    }
     VISIBLE_EVENTS = {"entity.moved", "attack.attempted", "attack.resolved", "health.changed"}
 
     def derive(self, source_events: list[Event], state: WorldProjection) -> list[NewEvent]:
