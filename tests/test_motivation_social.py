@@ -3,7 +3,7 @@ from worldos_core.motivation import MotivationEngine
 from worldos_core.planning import Goal, PlannerProjection
 from worldos_core.scheduler import DeterministicTickEngine
 from worldos_core.store import InMemoryEventStore
-from worldos_core.world import WorldProjection, replay_world
+from worldos_core.world import replay_world
 
 
 def _actor(
@@ -38,13 +38,13 @@ def _actor(
     )
 
 
-def _due_tick(engine: MotivationEngine, actor_id: str) -> int:
-    return next(tick for tick in range(1, 4) if engine._due(actor_id, tick))
+def _due_tick(engine: MotivationEngine, actor_id: str, *, seed: str = "worldos") -> int:
+    profile_key = f"{seed}:{actor_id}"
+    return next(tick for tick in range(1, 4) if engine._due(profile_key, tick))
 
 
 def test_motivation_competes_and_selects_contextual_goal():
     engine = MotivationEngine()
-    world = WorldProjection()
     store = InMemoryEventStore()
     store.append_batch(
         "main",
@@ -52,8 +52,8 @@ def test_motivation_competes_and_selects_contextual_goal():
             _actor(
                 "甲",
                 food=5,
-                personality={"sociability": 100, "generosity": 100, "assertiveness": 40, "risk_tolerance": 50},
-                drives={"security": 50, "belonging": 100, "status": 40, "wealth": 50, "curiosity": 50},
+                personality={"sociability": 100, "generosity": 100, "assertiveness": 40, "risk_tolerance": 20},
+                drives={"security": 50, "belonging": 100, "status": 40, "wealth": 50, "curiosity": 20},
             ),
             _actor("乙", food=0, hunger=60),
         ],
@@ -70,6 +70,35 @@ def test_motivation_competes_and_selects_contextual_goal():
     assert selected[0].payload["goal_type"] == "help_resident"
     goal = next(event for event in events if event.event_type == "goal.created" and event.actor_id == "甲")
     assert goal.payload["parameters"]["source_motivation"] == "care"
+
+
+def test_curiosity_can_create_exploration_goal():
+    engine = MotivationEngine()
+    store = InMemoryEventStore()
+    store.append_batch(
+        "main",
+        [
+            _actor(
+                "甲",
+                location="农田",
+                personality={"sociability": 0, "generosity": 0, "assertiveness": 0, "risk_tolerance": 100},
+                drives={"security": 0, "belonging": 0, "status": 0, "wealth": 0, "curiosity": 100},
+            ),
+            _actor("乙", location="集市"),
+            _actor("丙", location="河畔"),
+        ],
+        expected_sequence=0,
+    )
+    world = replay_world(store.read("main"))
+    tick = _due_tick(engine, "甲")
+
+    events = engine.derive(world, PlannerProjection(), tick=tick)
+    selected = next(event for event in events if event.event_type == "motivation.selected" and event.actor_id == "甲")
+    goal = next(event for event in events if event.event_type == "goal.created" and event.actor_id == "甲")
+
+    assert selected.payload["goal_type"] == "explore_location"
+    assert goal.payload["goal_type"] == "explore_location"
+    assert goal.payload["parameters"]["location_id"] in {"集市", "河畔"}
 
 
 def test_profiles_are_materialized_for_legacy_characters():
@@ -93,6 +122,25 @@ def test_profiles_are_materialized_for_legacy_characters():
         "curiosity",
     }
     assert world.entities["甲"].components["personality"] != world.entities["乙"].components["personality"]
+
+
+def test_same_actor_id_gets_different_profile_in_different_world_seed():
+    engine = MotivationEngine()
+    first = WorldProjection(flags={"seed": "甲世界"})
+    second = WorldProjection(flags={"seed": "乙世界"})
+    first.entities["人物-001"] = replay_world([_commit_for_projection(_actor("人物-001"))]).entities["人物-001"]
+    second.entities["人物-001"] = replay_world([_commit_for_projection(_actor("人物-001"))]).entities["人物-001"]
+
+    first_events = engine.derive(first, PlannerProjection(), tick=1)
+    second_events = engine.derive(second, PlannerProjection(), tick=1)
+    first_profile = next(event.payload["value"] for event in first_events if event.event_type == "entity.component_set" and event.payload["component"] == "personality")
+    second_profile = next(event.payload["value"] for event in second_events if event.event_type == "entity.component_set" and event.payload["component"] == "personality")
+    assert first_profile != second_profile
+
+
+def _commit_for_projection(candidate: NewEvent):
+    store = InMemoryEventStore()
+    return store.append_batch("main", [candidate], expected_sequence=0)[0]
 
 
 def test_social_goal_moves_then_interacts_and_completes():
@@ -143,23 +191,33 @@ def test_help_action_changes_resources_relationships_and_is_perceived():
     store.append_batch(
         "main",
         [
-            _actor(
-                "甲",
-                food=5,
-                relationships={"乙": 0},
-                personality={"sociability": 80, "generosity": 100, "assertiveness": 30, "risk_tolerance": 50},
-                drives={"security": 50, "belonging": 40, "status": 30, "wealth": 40, "curiosity": 40},
-            ),
+            _actor("甲", food=5, relationships={"乙": 0}),
             _actor("乙", food=0, hunger=60, relationships={"甲": 0}),
             _actor("丙", food=2, hunger=20),
+            NewEvent(
+                tick=0,
+                phase="cognition",
+                event_type="goal.created",
+                actor_id="甲",
+                subject_ids=("甲",),
+                payload=Goal(
+                    goal_id="help-goal",
+                    owner_id="甲",
+                    goal_type="help_resident",
+                    priority=99,
+                    parameters={
+                        "target_id": "乙",
+                        "resource": "food",
+                        "quantity": 1,
+                        "source_motivation": "care",
+                    },
+                ).model_dump(mode="json"),
+            ),
         ],
         expected_sequence=0,
     )
-    motivation = MotivationEngine()
-    engine = DeterministicTickEngine(store, world_seed="seed", motivation=motivation)
-    due = _due_tick(motivation, "甲")
-    for tick in range(1, due + 1):
-        engine.run_tick("main", tick)
+    engine = DeterministicTickEngine(store, world_seed="seed")
+    engine.run_tick("main", 1)
 
     history = store.read("main")
     help_events = [event for event in history if event.event_type == "social.helped" and event.actor_id == "甲"]
