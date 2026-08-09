@@ -1,6 +1,5 @@
 import json
 from http.server import ThreadingHTTPServer
-from pathlib import Path
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -61,10 +60,12 @@ def test_extended_console_creates_chinese_world_and_deletes_it(tmp_path):
 
         status, _, overview = request_json(base + "/api/overview?timeline=main", cookie=cookie)
         assert status == 200
-        assert list(overview["map"]) == ["东门"] or "农田" in overview["map"]
+        assert overview["summary"]["flags"]["locations"] == ["农田", "集市", "民居", "寺庙", "工坊", "河畔"]
         assert "农田" in overview["map"]
-        assert "河畔" in overview["map"]
+        assert "farm" not in overview["map"]
+        assert "river" not in overview["map"]
         assert all(actor["actor_id"].startswith("人物-") for actor in overview["actors"])
+        assert all(not actor["actor_id"].startswith("resident-") for actor in overview["actors"])
         assert all("Resident" not in actor["name"] for actor in overview["actors"])
 
         status, headers, deleted = request_json(base + f"/api/worlds/{world_id}", method="DELETE")
