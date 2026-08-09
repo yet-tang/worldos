@@ -121,7 +121,7 @@ def _enhance_inspector_html(html: str) -> str:
     )
     html = html.replace(
         "async function worldosRun(ticks){",
-        "function worldosControlWorldId(){const prefix='/world/';if(!location.pathname.startsWith(prefix))return '';return decodeURIComponent(location.pathname.slice(prefix.length)).replace(/\\/$/,'')}\n"
+        "function worldosControlWorldId(){const prefix='/world/';if(!location.pathname.startsWith(prefix))return '';const id=decodeURIComponent(location.pathname.slice(prefix.length));return id.endsWith('/')?id.slice(0,-1):id}\n"
         "async function worldosRun(ticks){",
     )
     html = html.replace(
