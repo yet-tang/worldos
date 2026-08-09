@@ -42,6 +42,14 @@ NON_WORLD_EVENTS = {
     "eat.resolved",
     "rest.attempted",
     "rest.resolved",
+    "social.interacted",
+    "social.rumor_shared",
+    "social.helped",
+    "social.requested",
+    "social.request_resolved",
+    "social.confronted",
+    "motivation.considered",
+    "motivation.selected",
     "observation.created",
     "belief.updated",
     "memory.recorded",
@@ -76,8 +84,6 @@ _WORLD_EVENT_TYPES = {
 
 
 def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
-    # World replay sees every event in the timeline. Most events do not mutate the
-    # world projection, so avoid copying the full entity graph for them.
     if event.event_type in NON_WORLD_EVENTS:
         if event.tick <= state.tick:
             return state
@@ -126,7 +132,7 @@ def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
             health = deepcopy(components.get("health", {"current": 100, "maximum": 100}))
             health["current"] = max(0, min(health["maximum"], health["current"] + event.payload["delta"]))
             components["health"] = health
-        else:  # guarded by _WORLD_EVENT_TYPES above
+        else:
             raise ValueError(f"no reducer registered for event type: {event.event_type}")
         updated = current.model_copy(update={"components": components})
 

@@ -106,7 +106,7 @@ class GoalPlanner:
         )
 
     def _steps_for(self, goal: Goal, context: PlanningContext) -> list[PlanStep]:
-        if goal.goal_type == "reach_location":
+        if goal.goal_type in {"reach_location", "explore_location"}:
             destination = goal.parameters["location_id"]
             return [self._step(goal, 0, "move", {"to_location_id": destination})]
         if goal.goal_type == "defeat_entity":
@@ -126,14 +126,31 @@ class GoalPlanner:
                 )
             ]
         if goal.goal_type == "rest":
-            return [
-                self._step(
-                    goal,
-                    0,
-                    "rest",
-                    {"relief": goal.parameters.get("relief", 40)},
-                )
-            ]
+            return [self._step(goal, 0, "rest", {"relief": goal.parameters.get("relief", 40)})]
+        if goal.goal_type == "request_resource":
+            return self._targeted_steps(
+                goal,
+                context,
+                "request_resource",
+                {
+                    "resource": goal.parameters.get("resource", "food"),
+                    "quantity": goal.parameters.get("quantity", 1),
+                },
+            )
+        if goal.goal_type == "help_resident":
+            return self._targeted_steps(
+                goal,
+                context,
+                "help_resident",
+                {
+                    "resource": goal.parameters.get("resource", "food"),
+                    "quantity": goal.parameters.get("quantity", 1),
+                },
+            )
+        if goal.goal_type == "strengthen_relationship":
+            return self._targeted_steps(goal, context, "socialize", {})
+        if goal.goal_type == "confront_rival":
+            return self._targeted_steps(goal, context, "confront", {})
         if goal.goal_type == "survive":
             owner = context.world.entities.get(goal.owner_id)
             health = owner.components.get("health", {}) if owner else {}
@@ -143,6 +160,27 @@ class GoalPlanner:
                 return [self._step(goal, 0, "move", {"to_location_id": goal.parameters["safe_location_id"]})]
             return []
         return []
+
+    def _targeted_steps(
+        self,
+        goal: Goal,
+        context: PlanningContext,
+        action_type: str,
+        arguments: dict[str, Any],
+    ) -> list[PlanStep]:
+        target_id = str(goal.parameters.get("target_id", ""))
+        owner = context.world.entities.get(goal.owner_id)
+        target = context.world.entities.get(target_id)
+        if not target_id or owner is None or target is None or not target.active:
+            return []
+        steps: list[PlanStep] = []
+        owner_location = owner.components.get("position", {}).get("location_id")
+        target_location = target.components.get("position", {}).get("location_id")
+        if target_location and owner_location != target_location:
+            steps.append(self._step(goal, len(steps), "move", {"to_location_id": target_location}))
+        action_arguments = {"target_id": target_id, **arguments}
+        steps.append(self._step(goal, len(steps), action_type, action_arguments))
+        return steps
 
     @staticmethod
     def _step(goal: Goal, ordinal: int, action_type: str, arguments: dict[str, Any]) -> PlanStep:

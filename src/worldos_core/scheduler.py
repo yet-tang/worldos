@@ -8,6 +8,7 @@ from .events import Event, NewEvent
 from .knowledge import KnowledgeProjection, replay_knowledge
 from .memory import MemoryEngine, MemoryProjection, replay_memory
 from .modules import ModuleContext, WorldModule, WorldModuleRegistry
+from .motivation import MotivationEngine
 from .needs import NeedEngine
 from .perception import PerceptionEngine
 from .pipeline import IntentPipeline, IntentProcessingResult
@@ -56,6 +57,7 @@ class DeterministicTickEngine:
         perception: PerceptionEngine | None = None,
         memory: MemoryEngine | None = None,
         needs: NeedEngine | None = None,
+        motivation: MotivationEngine | None = None,
         modules: tuple[WorldModule, ...] = (),
     ) -> None:
         self.store = store
@@ -64,6 +66,7 @@ class DeterministicTickEngine:
         self.perception = perception or PerceptionEngine()
         self.memory = memory or MemoryEngine()
         self.needs = needs or NeedEngine()
+        self.motivation = motivation or MotivationEngine()
         self.modules = WorldModuleRegistry(modules)
         self._projection_caches: dict[str, _ProjectionCache] = {}
 
@@ -123,6 +126,13 @@ class DeterministicTickEngine:
             committed,
             phase_counts,
         )
+        self._append(
+            cache,
+            timeline_id,
+            self.motivation.derive(cache.world, cache.planning, tick=tick),
+            committed,
+            phase_counts,
+        )
         actors = tuple(
             sorted(
                 owner_id
@@ -150,6 +160,17 @@ class DeterministicTickEngine:
                     committed,
                     phase_counts,
                 )
+            if not cache.planning.pending_steps(goal.goal_id):
+                if goal.parameters.get("source_motivation"):
+                    self._append(
+                        cache,
+                        timeline_id,
+                        [self._goal_status_event(goal.owner_id, goal.goal_id, tick, "failed")],
+                        committed,
+                        phase_counts,
+                    )
+                continue
+
             intent = self.planner.next_intent(cache.planning, context)
             if intent is None:
                 continue
@@ -192,6 +213,22 @@ class DeterministicTickEngine:
                     committed,
                     phase_counts,
                 )
+                if not result.accepted:
+                    self._append(
+                        cache,
+                        timeline_id,
+                        [self._goal_status_event(actor_id, goal_id, tick, "failed")],
+                        committed,
+                        phase_counts,
+                    )
+                elif not cache.planning.pending_steps(goal_id):
+                    self._append(
+                        cache,
+                        timeline_id,
+                        [self._goal_status_event(actor_id, goal_id, tick, "completed")],
+                        committed,
+                        phase_counts,
+                    )
 
         post_context = ModuleContext(
             timeline_id=timeline_id,
@@ -249,6 +286,18 @@ class DeterministicTickEngine:
             intent_results=tuple(intent_results),
             committed_events=tuple(committed),
             phase_counts=phase_counts,
+        )
+
+    @staticmethod
+    def _goal_status_event(owner_id: str, goal_id: str, tick: int, status: str) -> NewEvent:
+        return NewEvent(
+            tick=tick,
+            phase="planning",
+            event_type="goal.status_changed",
+            actor_id=owner_id,
+            subject_ids=(owner_id,),
+            correlation_id=goal_id,
+            payload={"owner_id": owner_id, "goal_id": goal_id, "status": status},
         )
 
     def invalidate_cache(self, timeline_id: str | None = None) -> None:
