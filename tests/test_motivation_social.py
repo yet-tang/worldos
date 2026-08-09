@@ -3,7 +3,7 @@ from worldos_core.motivation import MotivationEngine
 from worldos_core.planning import Goal, PlannerProjection
 from worldos_core.scheduler import DeterministicTickEngine
 from worldos_core.store import InMemoryEventStore
-from worldos_core.world import replay_world
+from worldos_core.world import WorldProjection, replay_world
 
 
 def _actor(
