@@ -112,6 +112,28 @@ class GoalPlanner:
         if goal.goal_type == "defeat_entity":
             target_id = goal.parameters["target_id"]
             return [self._step(goal, 0, "attack", {"target_id": target_id})]
+        if goal.goal_type == "eat":
+            return [
+                self._step(
+                    goal,
+                    0,
+                    "eat",
+                    {
+                        "resource": goal.parameters.get("resource", "food"),
+                        "quantity": goal.parameters.get("quantity", 1),
+                        "relief": goal.parameters.get("relief", 45),
+                    },
+                )
+            ]
+        if goal.goal_type == "rest":
+            return [
+                self._step(
+                    goal,
+                    0,
+                    "rest",
+                    {"relief": goal.parameters.get("relief", 40)},
+                )
+            ]
         if goal.goal_type == "survive":
             owner = context.world.entities.get(goal.owner_id)
             health = owner.components.get("health", {}) if owner else {}

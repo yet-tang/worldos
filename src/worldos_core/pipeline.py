@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from .actions import ActionContext, ActionRule, AttackRule, MoveRule
+from .actions import ActionContext, ActionRule, AttackRule, EatRule, MoveRule, RestRule
 from .events import Event, NewEvent
 from .intents import Intent, ValidationIssue
 from .resolution import DeterministicResolver
@@ -27,7 +27,7 @@ class IntentPipeline:
     def __init__(self, store: InMemoryEventStore, *, world_seed: str | int, rules: tuple[ActionRule, ...] | None = None) -> None:
         self.store = store
         self.resolver = DeterministicResolver(world_seed)
-        registered = rules or (MoveRule(), AttackRule())
+        registered = rules or (MoveRule(), AttackRule(), EatRule(), RestRule())
         self._rules = {rule.intent_type: rule for rule in registered}
         if len(self._rules) != len(registered):
             raise ValueError("duplicate intent rule registration")
