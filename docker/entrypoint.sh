@@ -12,14 +12,8 @@ ensure_parent() {
 case "${1:-inspector}" in
   inspector)
     ensure_parent
-    if [ ! -f "$DB_PATH" ]; then
-      if [ "${WORLDOS_AUTO_INIT:-false}" = "true" ]; then
-        worldos-living init --db "$DB_PATH"
-      else
-        echo "WorldOS database not found at $DB_PATH" >&2
-        echo "Run the init profile first or set WORLDOS_AUTO_INIT=true." >&2
-        exit 1
-      fi
+    if [ ! -f "$DB_PATH" ] && [ "${WORLDOS_AUTO_INIT:-false}" = "true" ]; then
+      worldos-living init --db "$DB_PATH"
     fi
     exec worldos-inspector --db "$DB_PATH" --host "$HOST" --port "$PORT"
     ;;
