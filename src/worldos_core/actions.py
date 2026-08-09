@@ -36,6 +36,13 @@ def _location(entity: EntityProjection | None) -> str | None:
     return entity.components.get("position", {}).get("location_id")
 
 
+def _positive_int(value: object, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class MoveRule:
     intent_type = "move"
 
@@ -97,3 +104,97 @@ class AttackRule:
         if hit:
             events.append(NewEvent(tick=intent.tick, phase="effects", event_type="health.changed", actor_id=intent.actor_id, subject_ids=(intent.target_id,), correlation_id=correlation_id, payload={"delta": -damage, "resolution_roll": roll}))
         return events
+
+
+class EatRule:
+    """Consume owned food to lower hunger through the normal intent pipeline."""
+
+    intent_type = "eat"
+
+    def validate(self, intent: Intent, context: ActionContext) -> ValidationResult:
+        actor = _entity(context.state, intent.actor_id)
+        issues: list[ValidationIssue] = []
+        if actor is None or not actor.active:
+            issues.append(ValidationIssue(code="actor_unavailable", message="actor does not exist or is inactive", subject_id=intent.actor_id))
+            return ValidationResult.reject(*issues)
+
+        resource = str(intent.parameters.get("resource", "food"))
+        quantity = _positive_int(intent.parameters.get("quantity", 1), 1)
+        inventory = actor.components.get("inventory", {})
+        available = int(inventory.get(resource, 0)) if isinstance(inventory, dict) else 0
+        if available < quantity:
+            issues.append(ValidationIssue(code="insufficient_food", message=f"not enough {resource} to eat", subject_id=intent.actor_id))
+        needs = actor.components.get("needs", actor.components.get("survival", {}))
+        hunger = int(needs.get("hunger", 0)) if isinstance(needs, dict) else 0
+        if hunger <= 0:
+            issues.append(ValidationIssue(code="not_hungry", message="actor is not hungry", subject_id=intent.actor_id))
+        return ValidationResult.reject(*issues) if issues else ValidationResult.accept()
+
+    def resolve(self, intent: Intent, context: ActionContext) -> list[NewEvent]:
+        actor = context.state.entities[intent.actor_id]
+        resource = str(intent.parameters.get("resource", "food"))
+        quantity = _positive_int(intent.parameters.get("quantity", 1), 1)
+        relief = _positive_int(intent.parameters.get("relief", 45), 45)
+        inventory = dict(actor.components.get("inventory", {}))
+        inventory[resource] = max(0, int(inventory.get(resource, 0)) - quantity)
+
+        needs = dict(actor.components.get("needs", actor.components.get("survival", {})))
+        hunger_before = int(needs.get("hunger", 0))
+        hunger_after = max(0, hunger_before - relief * quantity)
+        needs["hunger"] = hunger_after
+        survival = dict(actor.components.get("survival", needs))
+        survival["hunger"] = hunger_after
+
+        intent_id = intent.deterministic_id()
+        correlation_id = intent.correlation_id or intent_id
+        payload = {
+            "intent_id": intent_id,
+            "resource": resource,
+            "quantity": quantity,
+            "hunger_before": hunger_before,
+            "hunger_after": hunger_after,
+        }
+        return [
+            NewEvent(tick=intent.tick, phase="intent", event_type="eat.attempted", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"intent_id": intent_id, "resource": resource, "quantity": quantity}),
+            NewEvent(tick=intent.tick, phase="resolution", event_type="eat.resolved", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload=payload),
+            NewEvent(tick=intent.tick, phase="effects", event_type="entity.component_set", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"component": "inventory", "value": inventory}),
+            NewEvent(tick=intent.tick, phase="effects", event_type="entity.component_set", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"component": "needs", "value": needs}),
+            NewEvent(tick=intent.tick, phase="effects", event_type="entity.component_set", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"component": "survival", "value": survival}),
+        ]
+
+
+class RestRule:
+    """Reduce fatigue through an explicit deterministic self-care action."""
+
+    intent_type = "rest"
+
+    def validate(self, intent: Intent, context: ActionContext) -> ValidationResult:
+        actor = _entity(context.state, intent.actor_id)
+        issues: list[ValidationIssue] = []
+        if actor is None or not actor.active:
+            issues.append(ValidationIssue(code="actor_unavailable", message="actor does not exist or is inactive", subject_id=intent.actor_id))
+            return ValidationResult.reject(*issues)
+        needs = actor.components.get("needs", actor.components.get("survival", {}))
+        fatigue = int(needs.get("fatigue", 0)) if isinstance(needs, dict) else 0
+        if fatigue <= 0:
+            issues.append(ValidationIssue(code="not_tired", message="actor is not tired", subject_id=intent.actor_id))
+        return ValidationResult.reject(*issues) if issues else ValidationResult.accept()
+
+    def resolve(self, intent: Intent, context: ActionContext) -> list[NewEvent]:
+        actor = context.state.entities[intent.actor_id]
+        relief = _positive_int(intent.parameters.get("relief", 40), 40)
+        needs = dict(actor.components.get("needs", actor.components.get("survival", {})))
+        fatigue_before = int(needs.get("fatigue", 0))
+        fatigue_after = max(0, fatigue_before - relief)
+        needs["fatigue"] = fatigue_after
+        survival = dict(actor.components.get("survival", needs))
+        survival["fatigue"] = fatigue_after
+
+        intent_id = intent.deterministic_id()
+        correlation_id = intent.correlation_id or intent_id
+        return [
+            NewEvent(tick=intent.tick, phase="intent", event_type="rest.attempted", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"intent_id": intent_id}),
+            NewEvent(tick=intent.tick, phase="resolution", event_type="rest.resolved", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"intent_id": intent_id, "fatigue_before": fatigue_before, "fatigue_after": fatigue_after}),
+            NewEvent(tick=intent.tick, phase="effects", event_type="entity.component_set", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"component": "needs", "value": needs}),
+            NewEvent(tick=intent.tick, phase="effects", event_type="entity.component_set", actor_id=intent.actor_id, subject_ids=(intent.actor_id,), correlation_id=correlation_id, payload={"component": "survival", "value": survival}),
+        ]
