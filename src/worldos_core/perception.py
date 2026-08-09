@@ -21,6 +21,7 @@ class PerceptionEngine:
         "social.requested",
         "social.request_resolved",
         "social.confronted",
+        "social.repaid",
     }
     VISIBLE_EVENTS = {"entity.moved", "attack.attempted", "attack.resolved", "health.changed"}
 

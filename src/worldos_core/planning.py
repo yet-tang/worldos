@@ -147,6 +147,17 @@ class GoalPlanner:
                     "quantity": goal.parameters.get("quantity", 1),
                 },
             )
+        if goal.goal_type == "repay_obligation":
+            return self._targeted_steps(
+                goal,
+                context,
+                "repay_obligation",
+                {
+                    "obligation_id": goal.parameters["obligation_id"],
+                    "resource": goal.parameters.get("resource", "food"),
+                    "quantity": goal.parameters.get("quantity", 1),
+                },
+            )
         if goal.goal_type == "strengthen_relationship":
             return self._targeted_steps(goal, context, "socialize", {})
         if goal.goal_type == "confront_rival":

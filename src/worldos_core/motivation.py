@@ -7,6 +7,7 @@ from typing import Any
 
 from .events import NewEvent
 from .planning import Goal, PlannerProjection
+from .social import SocialProjection
 from .world import EntityProjection, WorldProjection
 
 
@@ -21,7 +22,7 @@ class MotivationCandidate:
 
 
 class MotivationEngine:
-    """Derive deterministic non-survival goals from character context."""
+    """Derive deterministic non-survival goals from character and social context."""
 
     cadence = 3
     cooldown = 6
@@ -32,6 +33,7 @@ class MotivationEngine:
         planning: PlannerProjection,
         *,
         tick: int,
+        social: SocialProjection | None = None,
     ) -> list[NewEvent]:
         events: list[NewEvent] = []
         actors = {
@@ -71,7 +73,16 @@ class MotivationEngine:
             if any(goal.parameters.get("source_motivation") for goal in planning.active_goals(owner_id)):
                 continue
 
-            candidates = self._candidates(owner_id, actor, actors, personality, drives, profile_key)
+            candidates = self._candidates(
+                owner_id,
+                actor,
+                actors,
+                personality,
+                drives,
+                profile_key,
+                social,
+                tick,
+            )
             if not candidates:
                 continue
             candidates.sort(
@@ -141,6 +152,8 @@ class MotivationEngine:
         personality: dict[str, int],
         drives: dict[str, int],
         profile_key: str,
+        social: SocialProjection | None,
+        tick: int,
     ) -> list[MotivationCandidate]:
         components = actor.components
         relationships = components.get("relationships", {})
@@ -154,6 +167,42 @@ class MotivationEngine:
         food = int(inventory.get("food", 0))
 
         candidates: list[MotivationCandidate] = []
+
+        if social is not None:
+            obligations = social.open_obligations_for_debtor(owner_id)
+            if obligations:
+                obligation = obligations[0]
+                available = int(inventory.get(obligation.resource, 0))
+                if available >= obligation.quantity and tick > obligation.created_tick:
+                    bond = social.bond(owner_id, obligation.creditor_id)
+                    remaining = obligation.due_tick - tick
+                    deadline_pressure = max(0, 6 - remaining) * 4
+                    priority = self._clamp(
+                        42
+                        + drives["status"] // 7
+                        + drives["security"] // 9
+                        + max(0, bond.trust) // 10
+                        + deadline_pressure
+                        - drives["wealth"] // 14,
+                        1,
+                        76,
+                    )
+                    candidates.append(
+                        MotivationCandidate(
+                            owner_id,
+                            "reciprocity",
+                            "repay_obligation",
+                            priority,
+                            {
+                                "target_id": obligation.creditor_id,
+                                "obligation_id": obligation.obligation_id,
+                                "resource": obligation.resource,
+                                "quantity": obligation.quantity,
+                                "due_tick": obligation.due_tick,
+                            },
+                            f"欠{obligation.creditor_id}一份{obligation.resource}人情，想在约定期限前兑现",
+                        )
+                    )
 
         if hunger >= 45 and food <= 1:
             target = self._best_resource_target(owner_id, actors, "food", minimum=3)
@@ -276,6 +325,8 @@ class MotivationEngine:
         motivation: str,
         tick: int,
     ) -> bool:
+        if motivation == "reciprocity":
+            return False
         return any(
             goal.parameters.get("source_motivation") == motivation
             and tick - goal.created_tick < self.cooldown

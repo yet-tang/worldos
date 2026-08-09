@@ -6,6 +6,7 @@ from .events import Event
 from .knowledge import Belief, KnowledgeProjection, Observation
 from .memory import MemoryPolicy, MemoryProjection, MemoryRecord
 from .planning import Goal, PlanStep, PlannerProjection
+from .social import SocialProjection, reduce_social
 from .world import EntityProjection, NON_WORLD_EVENTS, WorldProjection
 
 
@@ -117,6 +118,16 @@ def apply_knowledge_in_place(state: KnowledgeProjection, event: Event) -> None:
         belief = Belief(**event.payload)
         state.beliefs_by_observer.setdefault(belief.observer_id, {})[belief.belief_id] = belief
     state.applied_event_ids.append(event.event_id)
+
+
+def apply_social_in_place(state: SocialProjection, event: Event) -> None:
+    """Apply sparse social events while keeping the scheduler cache mutable."""
+    next_state = reduce_social(state, event)
+    if next_state is state:
+        return
+    state.bonds_by_actor = next_state.bonds_by_actor
+    state.obligations = next_state.obligations
+    state.applied_event_ids = next_state.applied_event_ids
 
 
 def _single_subject(event: Event) -> str:

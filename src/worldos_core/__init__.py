@@ -13,6 +13,13 @@ from .pipeline import IntentPipeline, IntentProcessingResult
 from .planning import Goal, GoalPlanner, PlanningContext, PlannerProjection, PlanStep, replay_planning
 from .runner import RunResult, RunnerMetrics, RunnerStatus, WorldRunner
 from .scheduler import DeterministicTickEngine, TickAlreadyCompletedError, TickResult
+from .social import (
+    SocialBond,
+    SocialObligation,
+    SocialProjection,
+    SocialStructureEngine,
+    replay_social,
+)
 from .sqlite_store import SQLiteEventStore, StoredSnapshot
 from .store import EventStoreError, InMemoryEventStore
 from .survival import SurvivalEconomyModule
@@ -25,6 +32,7 @@ __all__ = [
     "MemoryProjection", "MemoryPolicy", "MemoryEngine", "replay_memory", "NeedAssessment",
     "NeedsProjection", "NeedEngine", "replay_needs", "Goal", "PlanStep",
     "PlannerProjection", "PlanningContext", "GoalPlanner", "replay_planning",
+    "SocialBond", "SocialObligation", "SocialProjection", "SocialStructureEngine", "replay_social",
     "ModuleContext", "WorldModule", "BaseWorldModule", "WorldModuleRegistry",
     "SurvivalEconomyModule", "DeterministicTickEngine", "TickAlreadyCompletedError", "TickResult",
     "RunResult", "RunnerMetrics", "RunnerStatus", "WorldRunner",

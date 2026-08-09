@@ -9,6 +9,7 @@ from .inspector import WorldInspector
 from .knowledge import Belief, Observation
 from .memory import MemoryRecord
 from .planning import Goal, PlanStep
+from .social import SocialBond, SocialObligation
 
 
 class NarrativeEvent(BaseModel):
@@ -47,6 +48,9 @@ class NarrativeContext(BaseModel):
     memories: list[MemoryRecord] = Field(default_factory=list)
     goals: list[Goal] = Field(default_factory=list)
     plan_steps: list[PlanStep] = Field(default_factory=list)
+    social_bonds: list[SocialBond] = Field(default_factory=list)
+    obligations_as_debtor: list[SocialObligation] = Field(default_factory=list)
+    obligations_as_creditor: list[SocialObligation] = Field(default_factory=list)
 
 
 class NarratorReadAPI:
@@ -107,4 +111,7 @@ class NarratorReadAPI:
             memories=actor.memories,
             goals=actor.goals,
             plan_steps=actor.plan_steps,
+            social_bonds=actor.social_bonds,
+            obligations_as_debtor=actor.obligations_as_debtor,
+            obligations_as_creditor=actor.obligations_as_creditor,
         )
