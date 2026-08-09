@@ -11,6 +11,8 @@ from .web_console_summary import _summarize_html
 
 
 _STORY_HELPERS = r"""
+const STORY_SOCIAL_FACTS=new Set(['social.interacted','social.rumor_shared','social.helped','social.requested','social.request_resolved','social.confronted']);
+const STORY_INTERNAL_FACTS=new Set(['motivation.considered','motivation.selected']);
 function storyTraitLabel(key){
   if(lang!=='zh') return key;
   return {sociability:'合群',generosity:'慷慨',assertiveness:'强势',risk_tolerance:'冒险',security:'安全感',belonging:'归属感',status:'地位欲',wealth:'财富欲',curiosity:'好奇心'}[key]||key;
@@ -35,7 +37,7 @@ function storyGoals(items){
 }
 const _storyBaseGoalLabel=uiGoalLabel;
 uiGoalLabel=function(type){
-  const labels={request_resource:'寻求帮助',help_resident:'帮助他人',strengthen_relationship:'经营关系',confront_rival:'面对矛盾'};
+  const labels={request_resource:'寻求帮助',help_resident:'帮助他人',strengthen_relationship:'经营关系',confront_rival:'面对矛盾',explore_location:'探索地点'};
   if(lang==='zh'&&labels[type]) return labels[type];
   return _storyBaseGoalLabel(type);
 };
@@ -80,6 +82,30 @@ eventSummary=function(e){
   if(e.event_type==='social.request_resolved') return `${target} · ${p.outcome==='accepted'?'答应':'拒绝'}${actor}`;
   if(e.event_type==='social.confronted') return `${actor} ↔ ${target} · 争执`;
   return _storyBaseEventSummary(e);
+};
+const _storyBaseCompactMemories=uiCompactMemories;
+uiCompactMemories=function(items){
+  const all=uiMemories(items);
+  const social=all.filter(m=>STORY_SOCIAL_FACTS.has(uiFactTypeOf(m.content,m.content?.fact_type))).slice(0,6);
+  const rest=_storyBaseCompactMemories(items).filter(m=>!STORY_SOCIAL_FACTS.has(uiFactTypeOf(m.content,m.content?.fact_type)));
+  return [...social,...rest].slice(0,10);
+};
+const _storyBaseObservationDigest=uiObservationDigest;
+uiObservationDigest=function(items){
+  const observations=uiObservations(items).slice().sort((a,b)=>(b.tick??0)-(a.tick??0));
+  const social=observations.filter(o=>STORY_SOCIAL_FACTS.has(uiFactTypeOf(o.data,o.fact_type))).slice(0,6).map(o=>({label:uiFactType(uiFactTypeOf(o.data,o.fact_type)),tick:String(o.tick??''),text:uiFactSentence(o.data,o.fact_type)}));
+  const base=_storyBaseObservationDigest(items);
+  const keys=new Set(social.map(x=>`${x.label}|${x.tick}|${x.text}`));
+  return [...social,...base.filter(x=>!keys.has(`${x.label}|${x.tick}|${x.text}`))].slice(0,10);
+};
+const _storyBaseNarrativeDigest=uiNarrativeDigest;
+uiNarrativeDigest=function(events){return _storyBaseNarrativeDigest((events||[]).filter(e=>!STORY_INTERNAL_FACTS.has(e.event_type)))};
+const _storyBaseRenderEvents=renderEvents;
+renderEvents=function(events){
+  const raw=events||[];
+  _storyBaseRenderEvents(raw.filter(e=>!STORY_INTERNAL_FACTS.has(e.event_type)));
+  eventsData=raw;
+  $('eventsRaw').textContent=fmt(raw);
 };
 """
 
