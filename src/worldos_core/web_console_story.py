@@ -31,7 +31,8 @@ function storyProfileSection(a){
   return `<div class="section-title">${lang==='zh'?'性格与长期欲望':'Character & drives'}</div><div class="item"><div class="knowledge-meta"><strong>${lang==='zh'?'性格':'Personality'}</strong></div><div class="chips">${traits||'—'}</div><div class="knowledge-meta" style="margin-top:10px"><strong>${lang==='zh'?'长期欲望':'Long-term drives'}</strong></div><div class="chips">${wants||'—'}</div></div>`;
 }
 function storyBondLabel(b){
-  if((b.grievance??0)>=12||(b.affinity??0)<=-25) return lang==='zh'?'仇敌':'Enemy';
+  if((b.grievance??0)>=24||(b.affinity??0)<=-35) return lang==='zh'?'仇敌':'Enemy';
+  if((b.grievance??0)>=8||(b.affinity??0)<=-12) return lang==='zh'?'对手':'Rival';
   if((b.trust??0)>=28&&(b.affinity??0)>=16) return lang==='zh'?'盟友':'Ally';
   if((b.affinity??0)>=20&&(b.trust??0)>=10) return lang==='zh'?'朋友':'Friend';
   if((b.interactions??0)>=2) return lang==='zh'?'熟人':'Acquaintance';
