@@ -11,6 +11,20 @@ from .planning import Goal, PlannerProjection
 from .world import WorldProjection
 
 
+DEFAULT_NEED_POLICIES: dict[str, dict[str, Any]] = {
+    "hunger": {
+        "threshold": 70,
+        "goal_type": "eat",
+        "parameters": {"resource": "food", "quantity": 1, "relief": 45},
+    },
+    "fatigue": {
+        "threshold": 75,
+        "goal_type": "rest",
+        "parameters": {"relief": 40},
+    },
+}
+
+
 class NeedAssessment(BaseModel):
     need_id: str
     owner_id: str
@@ -59,10 +73,30 @@ class NeedEngine:
                         payload=assessment.model_dump(mode="json"),
                     )
                 )
+
+                active_need_goals = self._active_goals_for_need(
+                    planning, owner_id, assessment.need_type
+                )
+                compatible = [
+                    goal
+                    for goal in active_need_goals
+                    if goal.goal_type == assessment.goal_type
+                ]
+
                 if assessment.severity < assessment.threshold:
+                    for goal in active_need_goals:
+                        events.append(self._status_event(goal, tick, "suspended"))
                     continue
-                if self._has_active_goal(planning, owner_id, assessment.need_type):
+
+                if compatible:
                     continue
+
+                # Older worlds created before explicit self-care policies may still
+                # carry active `survive` goals for hunger/fatigue. Retire those stale
+                # goals instead of letting them block the new eat/rest behavior.
+                for goal in active_need_goals:
+                    events.append(self._status_event(goal, tick, "suspended"))
+
                 goal = self._goal_for(assessment)
                 events.append(
                     NewEvent(
@@ -82,7 +116,10 @@ class NeedEngine:
         policies = components.get("need_policies", {})
         result: list[NeedAssessment] = []
         for need_type, raw_value in sorted(configured.items()):
-            policy = policies.get(need_type, {})
+            policy = dict(DEFAULT_NEED_POLICIES.get(need_type, {}))
+            configured_policy = policies.get(need_type, {}) if isinstance(policies, dict) else {}
+            if isinstance(configured_policy, dict):
+                policy.update(configured_policy)
             severity = max(0, min(100, int(raw_value)))
             threshold = max(0, min(100, int(policy.get("threshold", 60))))
             goal_type = str(policy.get("goal_type", "survive"))
@@ -103,10 +140,29 @@ class NeedEngine:
         return result
 
     @staticmethod
-    def _has_active_goal(planning: PlannerProjection, owner_id: str, need_type: str) -> bool:
-        return any(
-            goal.parameters.get("source_need") == need_type
+    def _active_goals_for_need(
+        planning: PlannerProjection, owner_id: str, need_type: str
+    ) -> list[Goal]:
+        return [
+            goal
             for goal in planning.active_goals(owner_id)
+            if goal.parameters.get("source_need") == need_type
+        ]
+
+    @staticmethod
+    def _status_event(goal: Goal, tick: int, status: str) -> NewEvent:
+        return NewEvent(
+            tick=tick,
+            phase="cognition",
+            event_type="goal.status_changed",
+            actor_id=goal.owner_id,
+            subject_ids=(goal.owner_id,),
+            correlation_id=goal.goal_id,
+            payload={
+                "owner_id": goal.owner_id,
+                "goal_id": goal.goal_id,
+                "status": status,
+            },
         )
 
     @staticmethod
