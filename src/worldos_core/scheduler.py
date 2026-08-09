@@ -17,8 +17,10 @@ from .projection_runtime import (
     apply_knowledge_in_place,
     apply_memory_in_place,
     apply_planning_in_place,
+    apply_social_in_place,
     apply_world_in_place,
 )
+from .social import SocialProjection, SocialStructureEngine, replay_social
 from .store import InMemoryEventStore
 from .world import WorldProjection, replay_world
 
@@ -43,6 +45,7 @@ class _ProjectionCache:
     planning: PlannerProjection
     memory: MemoryProjection
     knowledge: KnowledgeProjection
+    social: SocialProjection
 
 
 class DeterministicTickEngine:
@@ -58,6 +61,7 @@ class DeterministicTickEngine:
         memory: MemoryEngine | None = None,
         needs: NeedEngine | None = None,
         motivation: MotivationEngine | None = None,
+        social: SocialStructureEngine | None = None,
         modules: tuple[WorldModule, ...] = (),
     ) -> None:
         self.store = store
@@ -67,6 +71,7 @@ class DeterministicTickEngine:
         self.memory = memory or MemoryEngine()
         self.needs = needs or NeedEngine()
         self.motivation = motivation or MotivationEngine()
+        self.social = social or SocialStructureEngine()
         self.modules = WorldModuleRegistry(modules)
         self._projection_caches: dict[str, _ProjectionCache] = {}
 
@@ -129,7 +134,12 @@ class DeterministicTickEngine:
         self._append(
             cache,
             timeline_id,
-            self.motivation.derive(cache.world, cache.planning, tick=tick),
+            self.motivation.derive(
+                cache.world,
+                cache.planning,
+                tick=tick,
+                social=cache.social,
+            ),
             committed,
             phase_counts,
         )
@@ -185,7 +195,7 @@ class DeterministicTickEngine:
             action_events.extend(
                 event
                 for event in result.committed_events
-                if event.phase in {"intent", "resolution", "effects"}
+                if event.phase in {"intent", "resolution", "effects", "social"}
             )
 
             step_id = intent.metadata.get("step_id")
@@ -229,6 +239,26 @@ class DeterministicTickEngine:
                         committed,
                         phase_counts,
                     )
+
+        social_start = len(committed)
+        self._append(
+            cache,
+            timeline_id,
+            self.social.derive_after_actions(cache.social, action_events, tick=tick),
+            committed,
+            phase_counts,
+        )
+        action_events.extend(committed[social_start:])
+
+        deadline_start = len(committed)
+        self._append(
+            cache,
+            timeline_id,
+            self.social.derive_deadlines(cache.social, cache.world, tick=tick),
+            committed,
+            phase_counts,
+        )
+        action_events.extend(committed[deadline_start:])
 
         post_context = ModuleContext(
             timeline_id=timeline_id,
@@ -318,6 +348,7 @@ class DeterministicTickEngine:
             planning=replay_planning(events),
             memory=replay_memory(events),
             knowledge=replay_knowledge(events),
+            social=replay_social(events),
         )
         self._projection_caches[timeline_id] = cached
         return cached
@@ -352,6 +383,7 @@ class DeterministicTickEngine:
             apply_planning_in_place(cache.planning, event)
             apply_memory_in_place(cache.memory, event, self.memory.policy)
             apply_knowledge_in_place(cache.knowledge, event)
+            apply_social_in_place(cache.social, event)
             committed.append(event)
             phase_counts[event.phase] = phase_counts.get(event.phase, 0) + 1
 
