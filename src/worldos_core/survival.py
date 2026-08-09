@@ -12,6 +12,8 @@ class SurvivalEconomyModule(BaseWorldModule):
 
     name = "survival_economy"
     order = 20
+    default_hunger_work_limit = 70
+    default_fatigue_work_limit = 75
 
     def before_actions(self, context: ModuleContext) -> list[NewEvent]:
         actors = {
@@ -40,8 +42,24 @@ class SurvivalEconomyModule(BaseWorldModule):
             if fatigue >= 100:
                 health_events.append(NewEvent(tick=context.tick, phase="module", event_type="health.changed", actor_id=actor_id, subject_ids=(actor_id,), payload={"delta": -1, "reason": "exhaustion"}))
 
+            work_policy = components.get("work_policy", {})
+            hunger_limit = self._clamp(
+                work_policy.get("max_hunger", self.default_hunger_work_limit)
+                if isinstance(work_policy, dict)
+                else self.default_hunger_work_limit,
+                1,
+                100,
+            )
+            fatigue_limit = self._clamp(
+                work_policy.get("max_fatigue", self.default_fatigue_work_limit)
+                if isinstance(work_policy, dict)
+                else self.default_fatigue_work_limit,
+                1,
+                100,
+            )
+            can_work = hunger < hunger_limit and fatigue < fatigue_limit
             job = components.get("job")
-            if isinstance(job, dict) and job.get("resource") and int(job.get("rate", 0)) > 0:
+            if can_work and isinstance(job, dict) and job.get("resource") and int(job.get("rate", 0)) > 0:
                 resource = str(job["resource"])
                 quantity = int(job["rate"])
                 inventory = dict(components.get("inventory", {}))
@@ -62,7 +80,31 @@ class SurvivalEconomyModule(BaseWorldModule):
             for component, value in sorted(current.items()):
                 if original.get(component) != value:
                     changes.append(NewEvent(tick=context.tick, phase="module", event_type="entity.component_set", actor_id=actor_id, subject_ids=(actor_id,), payload={"component": component, "value": value}))
-        return changes + health_events + audit
+
+        damage_by_actor: dict[str, int] = {}
+        for event in health_events:
+            if len(event.subject_ids) != 1:
+                continue
+            target_id = event.subject_ids[0]
+            damage_by_actor[target_id] = damage_by_actor.get(target_id, 0) + max(0, -int(event.payload.get("delta", 0)))
+        deactivations: list[NewEvent] = []
+        for actor_id, damage in sorted(damage_by_actor.items()):
+            if actor_id not in actors:
+                continue
+            health = actors[actor_id].components.get("health", {})
+            current_health = int(health.get("current", 100)) if isinstance(health, dict) else 100
+            if damage > 0 and current_health - damage <= 0:
+                deactivations.append(
+                    NewEvent(
+                        tick=context.tick,
+                        phase="module",
+                        event_type="entity.deactivated",
+                        actor_id=actor_id,
+                        subject_ids=(actor_id,),
+                        payload={"reason": "health_depleted"},
+                    )
+                )
+        return changes + health_events + deactivations + audit
 
     def _process_trades(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for seller_id in sorted(staged):
