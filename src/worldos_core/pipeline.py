@@ -17,6 +17,7 @@ from .actions import (
 from .events import Event, NewEvent
 from .intents import Intent, ValidationIssue
 from .resolution import DeterministicResolver
+from .social_actions import RepayObligationRule
 from .store import InMemoryEventStore
 from .world import WorldProjection, replay_world
 
@@ -47,6 +48,7 @@ class IntentPipeline:
             HelpResidentRule(),
             RequestResourceRule(),
             ConfrontRule(),
+            RepayObligationRule(),
         )
         self._rules = {rule.intent_type: rule for rule in registered}
         if len(self._rules) != len(registered):
