@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from .runner import WorldRunner
 from .web_console import _control_lock, make_console_handler as make_base_console_handler
 from .world_creator import WorldCatalog
 
@@ -32,7 +33,7 @@ def _enhance_creator_html(html: str) -> str:
   if(!confirm(`确定删除世界「${name}」吗？\n\n这个操作会删除该世界的开发数据文件，无法撤销。`)) return;
   try{
     await api('/api/worlds/'+encodeURIComponent(worldId),{method:'DELETE'});
-    await loadWorlds();
+    location.href='/';
   }catch(e){
     alert('删除失败：'+e.message);
   }
@@ -118,6 +119,19 @@ def _enhance_inspector_html(html: str) -> str:
         "data.changed_entities.map(esc).join(', ')",
         "data.changed_entities.map(id=>esc(actorLabel(id))).join(', ')",
     )
+    html = html.replace(
+        "async function worldosRun(ticks){",
+        "function worldosControlWorldId(){const prefix='/world/';if(!location.pathname.startsWith(prefix))return '';const id=decodeURIComponent(location.pathname.slice(prefix.length));return id.endsWith('/')?id.slice(0,-1):id}\n"
+        "async function worldosRun(ticks){",
+    )
+    html = html.replace(
+        "body:JSON.stringify({ticks})",
+        "body:JSON.stringify({world_id:worldosControlWorldId(),ticks})",
+    )
+    html = html.replace(
+        "if(!response.ok) throw new Error(payload.error||'运行失败');",
+        "if(!response.ok){if(response.status===404){status.textContent=payload.error||'该世界已删除或不存在';setTimeout(()=>location.href='/',900);return}throw new Error(payload.error||'运行失败');}",
+    )
     html = html.replace("Tick ${e.tick}", "第 ${e.tick} 回合")
     html = html.replace("Tick ${m.tick}", "第 ${m.tick} 回合")
     html = html.replace("Tick ${o.tick}", "第 ${o.tick} 回合")
@@ -130,6 +144,79 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
     BaseHandler = make_base_console_handler(database_path)
 
     class Handler(BaseHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/control/run":
+                super().do_POST()
+                return
+
+            try:
+                payload = self._read_json()
+                world_id = str(payload.get("world_id", "")).strip()
+                if not world_id:
+                    self._send(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "缺少世界标识，请返回“我的世界”重新进入"},
+                    )
+                    return
+
+                ticks = int(payload.get("ticks", 0))
+                if ticks not in {1, 10, 100}:
+                    self._send(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "只能运行 1、10 或 100 个回合"},
+                    )
+                    return
+
+                try:
+                    descriptor = catalog.get(world_id)
+                except KeyError:
+                    self._send(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "该世界已删除或不存在，请返回“我的世界”"},
+                        extra_headers={
+                            "Set-Cookie": (
+                                "worldos_world=; Path=/; Max-Age=0; "
+                                "Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+                            )
+                        },
+                    )
+                    return
+
+                database = Path(descriptor.database_path)
+                lock = _control_lock(database)
+                if not lock.acquire(blocking=False):
+                    self._send(
+                        HTTPStatus.CONFLICT,
+                        {"error": "这个世界正在运行，请稍后再试"},
+                    )
+                    return
+                try:
+                    with WorldRunner(database, timeline_id="main") as runner:
+                        before = runner.status()
+                        result = runner.step(ticks, force=True)
+                        after = result.status
+                    self._send(
+                        HTTPStatus.OK,
+                        {
+                            "world_id": world_id,
+                            "ticks_requested": ticks,
+                            "ticks_run": len(result.tick_results),
+                            "before_tick": before.last_completed_tick,
+                            "after_tick": after.last_completed_tick,
+                            "before_events": before.event_count,
+                            "after_events": after.event_count,
+                            "world_hash": after.world_hash,
+                            "elapsed_seconds": after.metrics.elapsed_seconds,
+                        },
+                    )
+                finally:
+                    lock.release()
+            except (TypeError, ValueError) as exc:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception as exc:
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
         def do_DELETE(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if not parsed.path.startswith("/api/worlds/"):
@@ -160,7 +247,10 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                     HTTPStatus.OK,
                     {"deleted": True, "world_id": deleted.world_id, "name": deleted.name},
                     extra_headers={
-                        "Set-Cookie": "worldos_world=; Path=/; Max-Age=0; SameSite=Lax"
+                        "Set-Cookie": (
+                            "worldos_world=; Path=/; Max-Age=0; "
+                            "Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax"
+                        )
                     },
                 )
             except KeyError:
