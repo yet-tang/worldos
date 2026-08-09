@@ -6,6 +6,21 @@ from worldos_core.store import InMemoryEventStore
 from worldos_core.world import replay_world
 
 
+QUIET_PERSONALITY = {
+    "sociability": 10,
+    "generosity": 10,
+    "assertiveness": 10,
+    "risk_tolerance": 10,
+}
+QUIET_DRIVES = {
+    "security": 30,
+    "belonging": 10,
+    "status": 20,
+    "wealth": 90,
+    "curiosity": 10,
+}
+
+
 def _actor(
     actor_id: str,
     *,
@@ -108,12 +123,7 @@ def test_help_creates_obligation_then_debtor_autonomously_repays():
                 "乙",
                 food=3,
                 hunger=60,
-                personality={
-                    "sociability": 10,
-                    "generosity": 10,
-                    "assertiveness": 10,
-                    "risk_tolerance": 10,
-                },
+                personality=QUIET_PERSONALITY,
                 drives={
                     "security": 90,
                     "belonging": 10,
@@ -122,15 +132,30 @@ def test_help_creates_obligation_then_debtor_autonomously_repays():
                     "curiosity": 10,
                 },
             ),
-            _actor("丙", food=3, hunger=20),
+            _actor(
+                "丙",
+                food=2,
+                hunger=20,
+                personality=QUIET_PERSONALITY,
+                drives=QUIET_DRIVES,
+            ),
         ],
         expected_sequence=0,
     )
     engine = DeterministicTickEngine(store, world_seed="social-loop")
+    target_obligation_id = None
     for tick in range(1, 21):
         engine.run_tick("main", tick)
-        if any(event.event_type == "obligation.fulfilled" for event in store.read("main")):
-            break
+        social = replay_social(store.read("main"))
+        matching = [
+            item
+            for item in social.obligations.values()
+            if item.debtor_id == "乙" and item.creditor_id == "甲"
+        ]
+        if matching:
+            target_obligation_id = matching[0].obligation_id
+            if matching[0].status == "fulfilled":
+                break
 
     history = store.read("main")
     event_types = [event.event_type for event in history]
@@ -146,11 +171,11 @@ def test_help_creates_obligation_then_debtor_autonomously_repays():
     )
 
     social = replay_social(history)
-    obligations = list(social.obligations.values())
-    assert obligations
-    assert obligations[0].debtor_id == "乙"
-    assert obligations[0].creditor_id == "甲"
-    assert obligations[0].status == "fulfilled"
+    assert target_obligation_id is not None
+    obligation = social.obligations[target_obligation_id]
+    assert obligation.debtor_id == "乙"
+    assert obligation.creditor_id == "甲"
+    assert obligation.status == "fulfilled"
     assert social.bond("甲", "乙").trust > 0
     assert social.bond("乙", "甲").trust > 0
 
@@ -170,23 +195,12 @@ def test_unfulfilled_resource_debt_creates_rivalry_before_enemy_escalation():
     store.append_batch(
         "main",
         [
-            _actor("甲", food=2),
+            _actor("甲", food=2, personality=QUIET_PERSONALITY, drives=QUIET_DRIVES),
             _actor(
                 "乙",
                 food=0,
-                personality={
-                    "sociability": 10,
-                    "generosity": 10,
-                    "assertiveness": 10,
-                    "risk_tolerance": 10,
-                },
-                drives={
-                    "security": 30,
-                    "belonging": 10,
-                    "status": 20,
-                    "wealth": 90,
-                    "curiosity": 10,
-                },
+                personality=QUIET_PERSONALITY,
+                drives=QUIET_DRIVES,
             ),
             NewEvent(
                 tick=0,
@@ -223,7 +237,7 @@ def test_unfulfilled_resource_debt_creates_rivalry_before_enemy_escalation():
     assert creditor_view.label() == "rival"
 
     world = replay_world(history)
-    assert world.entities["甲"].components["relationships"]["乙"] <= -10
+    assert world.entities["甲"].components["relationships"]["乙"] == -10
     assert any(
         event.event_type == "observation.created"
         and event.actor_id == "甲"
@@ -237,8 +251,8 @@ def test_unreturned_favor_only_cools_trust():
     store.append_batch(
         "main",
         [
-            _actor("甲"),
-            _actor("乙", food=0),
+            _actor("甲", personality=QUIET_PERSONALITY, drives=QUIET_DRIVES),
+            _actor("乙", food=0, personality=QUIET_PERSONALITY, drives=QUIET_DRIVES),
             NewEvent(
                 tick=0,
                 phase="social",
