@@ -57,6 +57,11 @@ def test_extended_console_creates_chinese_world_and_deletes_it(tmp_path):
             cookie = response.headers["Set-Cookie"].split(";", 1)[0]
         assert ".actor-id,.profile-id{display:none}" in inspector_html
         assert "grain:'粮食'" in inspector_html
+        assert "function actorLabel(id)" in inspector_html
+        assert "${esc(actorLabel(id))}</button>" in inspector_html
+        assert "${esc(actorLabel(actor))}" in inspector_html
+        assert "visibleEvents=events.filter" in inspector_html
+        assert "actorLabel(n.perspective_actor_id)" in inspector_html
 
         status, _, overview = request_json(base + "/api/overview?timeline=main", cookie=cookie)
         assert status == 200
