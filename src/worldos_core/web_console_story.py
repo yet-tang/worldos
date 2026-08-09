@@ -5,7 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .web_console_summary import make_console_handler as make_summary_console_handler
+from .web_console_extensions import make_console_handler as make_extended_console_handler
+from .web_console_humanized import _humanize_resident_html
+from .web_console_summary import _summarize_html
 
 
 _STORY_HELPERS = r"""
@@ -95,7 +97,7 @@ def _story_html(html: str) -> str:
 
 
 def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandler]:
-    BaseHandler = make_summary_console_handler(database_path)
+    BaseHandler = make_extended_console_handler(database_path)
     base_send = BaseHandler._send
 
     class Handler(BaseHandler):
@@ -108,7 +110,7 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
             extra_headers: dict[str, str] | None = None,
         ) -> None:
             if isinstance(payload, str) and content_type.startswith("text/html"):
-                payload = _story_html(payload)
+                payload = _story_html(_summarize_html(_humanize_resident_html(payload)))
             base_send(self, status, payload, content_type, extra_headers=extra_headers)
 
     return Handler
