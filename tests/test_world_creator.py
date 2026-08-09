@@ -1,3 +1,4 @@
+from worldos_core.runner import WorldRunner
 from worldos_core.sqlite_store import SQLiteEventStore
 from worldos_core.world import replay_world
 from worldos_core.world_creator import WorldCatalog, WorldConfig, compile_bootstrap_events
@@ -60,6 +61,17 @@ def test_catalog_creates_independent_replayable_world(tmp_path):
         world = replay_world(history)
         assert world.flags["world_name"] == "World B"
         assert world.flags["world_type"] == "mars_colony"
+
+
+def test_created_world_runs_with_generic_runtime(tmp_path):
+    descriptor = WorldCatalog(tmp_path).create(make_config(name="Runnable", seed="runtime"))
+
+    with WorldRunner(descriptor.database_path, world_seed=descriptor.seed, snapshot_interval=0) as runner:
+        result = runner.run(1)
+
+    assert result.status.last_completed_tick == 1
+    assert result.status.event_count > 1 + 4 + 8
+    assert result.status.world_hash
 
 
 def test_catalog_keeps_legacy_world_visible(tmp_path):
