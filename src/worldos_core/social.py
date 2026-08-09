@@ -24,8 +24,10 @@ class SocialBond(BaseModel):
     obligations_defaulted: int = 0
 
     def label(self) -> str:
-        if self.grievance >= 12 or self.affinity <= -25:
+        if self.grievance >= 24 or self.affinity <= -35:
             return "enemy"
+        if self.grievance >= 8 or self.affinity <= -12:
+            return "rival"
         if self.trust >= 28 and self.affinity >= 16:
             return "ally"
         if self.affinity >= 20 and self.trust >= 10:
@@ -125,7 +127,13 @@ def reduce_social(state: SocialProjection, event: Event) -> SocialProjection:
         if status == "fulfilled":
             _adjust_bond(next_state, current.creditor_id, current.debtor_id, trust=4, affinity=2, fulfilled=1)
             _adjust_bond(next_state, current.debtor_id, current.creditor_id, trust=8, affinity=3, fulfilled=1)
+        elif current.kind == "favor":
+            # A voluntary favor creates a social expectation, not a legally hard debt.
+            # Missing reciprocity should cool trust, not instantly create an enemy.
+            _adjust_bond(next_state, current.creditor_id, current.debtor_id, trust=-4, affinity=-2, grievance=3, defaulted=1)
+            _adjust_bond(next_state, current.debtor_id, current.creditor_id, trust=-1, affinity=-1, grievance=1, defaulted=1)
         else:
+            # Explicitly borrowed resources carry a materially stronger default cost.
             _adjust_bond(next_state, current.creditor_id, current.debtor_id, trust=-16, affinity=-6, grievance=12, defaulted=1)
             _adjust_bond(next_state, current.debtor_id, current.creditor_id, trust=-5, affinity=-3, grievance=4, defaulted=1)
         return next_state
@@ -249,18 +257,23 @@ class SocialStructureEngine:
                         "obligation_id": obligation.obligation_id,
                         "debtor_id": obligation.debtor_id,
                         "creditor_id": obligation.creditor_id,
+                        "kind": obligation.kind,
                         "reason": "unfulfilled_by_due_tick",
                     },
                 )
             )
             debtor = world.entities.get(obligation.debtor_id)
             creditor = world.entities.get(obligation.creditor_id)
+            if obligation.kind == "favor":
+                debtor_delta, creditor_delta = -1, -3
+            else:
+                debtor_delta, creditor_delta = -5, -10
             if debtor is not None:
                 events.append(
                     _relationship_effect(
                         debtor,
                         obligation.creditor_id,
-                        -5,
+                        debtor_delta,
                         tick=tick,
                         actor_id=obligation.debtor_id,
                         correlation_id=obligation.obligation_id,
@@ -271,7 +284,7 @@ class SocialStructureEngine:
                     _relationship_effect(
                         creditor,
                         obligation.debtor_id,
-                        -10,
+                        creditor_delta,
                         tick=tick,
                         actor_id=obligation.creditor_id,
                         correlation_id=obligation.obligation_id,
