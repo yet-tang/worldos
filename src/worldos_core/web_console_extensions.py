@@ -56,6 +56,68 @@ def _enhance_inspector_html(html: str) -> str:
         ".actor-id,.profile-id{display:none}</style>",
         1,
     )
+    html = html.replace(
+        "function valueOrDash(v){return v===undefined||v===null?'—':v}",
+        "function actorLabel(id){if(!id)return '';const a=(overviewData?.actors||[]).find(x=>x.actor_id===id);return a?.name||id}\n"
+        "function valueOrDash(v){return v===undefined||v===null?'—':v}",
+    )
+    html = html.replace(
+        "${esc(id)}</button>",
+        "${esc(actorLabel(id))}</button>",
+    )
+    html = html.replace(
+        "<strong>${esc(actor)}</strong> → ${esc(target)}",
+        "<strong>${esc(actorLabel(actor))}</strong> → ${esc(actorLabel(target))}",
+    )
+    html = html.replace(
+        "${e.actor_id||e.subject_ids?.[0]||''} → ${placeLabel(p.to_location_id)}",
+        "${actorLabel(e.actor_id||e.subject_ids?.[0]||'')} → ${placeLabel(p.to_location_id)}",
+    )
+    html = html.replace(
+        "${e.subject_ids?.[0]||''} ${p.delta>0?'+':''}${p.delta??''}",
+        "${actorLabel(e.subject_ids?.[0]||'')} ${p.delta>0?'+':''}${p.delta??''}",
+    )
+    html = html.replace(
+        "${e.actor_id||''} ${resourceLabel(p.resource||'')} +${p.quantity??''}",
+        "${actorLabel(e.actor_id||'')} ${resourceLabel(p.resource||'')} +${p.quantity??''}",
+    )
+    html = html.replace(
+        "${p.seller_id||e.actor_id||''} ↔ ${p.buyer_id||''} ${resourceLabel(p.resource||'')}",
+        "${actorLabel(p.seller_id||e.actor_id||'')} ↔ ${actorLabel(p.buyer_id||'')} ${resourceLabel(p.resource||'')}",
+    )
+    html = html.replace(
+        "${e.actor_id||''} → ${p.listener_id||p.target_id||''}",
+        "${actorLabel(e.actor_id||'')} → ${actorLabel(p.listener_id||p.target_id||'')}",
+    )
+    html = html.replace(
+        "${e.actor_id||p.owner_id||''} · ${p.goal_type||''}",
+        "${actorLabel(e.actor_id||p.owner_id||'')} · ${p.goal_type||''}",
+    )
+    html = html.replace(
+        "${p.observer_id||e.actor_id||''} · ${p.fact_type||''}",
+        "${actorLabel(p.observer_id||e.actor_id||'')} · ${p.fact_type||''}",
+    )
+    html = html.replace(
+        "return e.actor_id||e.subject_ids?.join(', ')||''",
+        "return actorLabel(e.actor_id)||(e.subject_ids||[]).map(actorLabel).join(', ')||''",
+    )
+    html = html.replace(
+        "const ordered=[...events].reverse();",
+        "const visibleEvents=events.filter(e=>!(e.tick===0&&['entity.created','world.flag_set'].includes(e.event_type)));"
+        "const ordered=[...visibleEvents].reverse();",
+    )
+    html = html.replace(
+        "const events=n.events||[];",
+        "const events=(n.events||[]).filter(e=>!(e.tick===0&&['entity.created','world.flag_set'].includes(e.event_type)));",
+    )
+    html = html.replace(
+        "esc(n.perspective_actor_id)",
+        "esc(actorLabel(n.perspective_actor_id))",
+    )
+    html = html.replace(
+        "data.changed_entities.map(esc).join(', ')",
+        "data.changed_entities.map(id=>esc(actorLabel(id))).join(', ')",
+    )
     html = html.replace("Tick ${e.tick}", "第 ${e.tick} 回合")
     html = html.replace("Tick ${m.tick}", "第 ${m.tick} 回合")
     html = html.replace("Tick ${o.tick}", "第 ${o.tick} 回合")
