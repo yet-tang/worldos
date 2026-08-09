@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -103,6 +104,8 @@ def reduce_social(state: SocialProjection, event: Event) -> SocialProjection:
 
     if event.event_type == "obligation.created":
         obligation = SocialObligation(**event.payload)
+        if obligation.obligation_id in state.obligations:
+            return state
         obligations = dict(state.obligations)
         obligations[obligation.obligation_id] = obligation
         next_state.obligations = obligations
@@ -163,7 +166,65 @@ def replay_social(events: list[Event], initial: SocialProjection | None = None) 
 
 
 class SocialStructureEngine:
-    """Turns unfulfilled social obligations into durable social consequences."""
+    """Creates reciprocity obligations and turns broken ones into durable consequences."""
+
+    resource_debt_due = 8
+    favor_due = 12
+
+    def derive_after_actions(
+        self,
+        social: SocialProjection,
+        source_events: list[Event],
+        *,
+        tick: int,
+    ) -> list[NewEvent]:
+        events: list[NewEvent] = []
+        known = set(social.obligations)
+        for source in source_events:
+            if source.event_type == "social.helped":
+                creditor_id = source.actor_id or str(source.payload.get("helper_id", ""))
+                debtor_id = str(source.payload.get("target_id", ""))
+                kind: ObligationKind = "favor"
+                due_tick = tick + self.favor_due
+            elif source.event_type == "social.request_resolved" and source.payload.get("outcome") == "accepted":
+                debtor_id = source.actor_id or (source.subject_ids[0] if source.subject_ids else "")
+                creditor_id = str(source.payload.get("target_id", ""))
+                kind = "resource_debt"
+                due_tick = tick + self.resource_debt_due
+            else:
+                continue
+            if not debtor_id or not creditor_id or debtor_id == creditor_id:
+                continue
+            resource = str(source.payload.get("resource", "food"))
+            quantity = max(1, int(source.payload.get("quantity", 1)))
+            obligation_id = self._obligation_id(source, debtor_id, creditor_id, resource, quantity)
+            if obligation_id in known:
+                continue
+            known.add(obligation_id)
+            events.append(
+                NewEvent(
+                    tick=tick,
+                    phase="social",
+                    event_type="obligation.created",
+                    actor_id=debtor_id,
+                    subject_ids=(debtor_id, creditor_id),
+                    correlation_id=source.correlation_id or obligation_id,
+                    caused_by=(source.event_id,),
+                    payload={
+                        "obligation_id": obligation_id,
+                        "debtor_id": debtor_id,
+                        "creditor_id": creditor_id,
+                        "kind": kind,
+                        "resource": resource,
+                        "quantity": quantity,
+                        "created_tick": tick,
+                        "due_tick": due_tick,
+                        "status": "open",
+                        "source_correlation_id": source.correlation_id,
+                    },
+                )
+            )
+        return events
 
     def derive_deadlines(
         self,
@@ -217,6 +278,20 @@ class SocialStructureEngine:
                     )
                 )
         return events
+
+    @staticmethod
+    def _obligation_id(
+        source: Event,
+        debtor_id: str,
+        creditor_id: str,
+        resource: str,
+        quantity: int,
+    ) -> str:
+        base = source.correlation_id or source.event_id
+        digest = hashlib.sha256(
+            f"{base}:{debtor_id}:{creditor_id}:{resource}:{quantity}".encode("utf-8")
+        ).hexdigest()[:20]
+        return f"obl_{digest}"
 
 
 def _adjust_bond(
