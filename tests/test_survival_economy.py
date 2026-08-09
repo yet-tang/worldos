@@ -97,13 +97,18 @@ def test_critical_needs_stop_automatic_work_and_damage_health():
     )
     world = replay_world(store.read("main"))
     alice = world.entities["alice"].components
-    event_types = [event.event_type for event in committed if event.actor_id == "alice"]
+    alice_events = [event for event in committed if event.actor_id == "alice"]
+    self_damage = [
+        event
+        for event in committed
+        if event.event_type == "health.changed" and event.subject_ids == ("alice",)
+    ]
 
     assert alice["needs"] == {"hunger": 100, "fatigue": 100}
     assert alice["inventory"]["food"] == 1
     assert alice["health"]["current"] == 98
-    assert "resource.produced" not in event_types
-    assert event_types.count("health.changed") == 2
+    assert "resource.produced" not in [event.event_type for event in alice_events]
+    assert len(self_damage) == 2
 
 
 def test_zero_health_deactivates_character():
