@@ -23,7 +23,6 @@ def apply_world_in_place(state: WorldProjection, event: Event) -> None:
     """Apply one event to a private cached world projection without copying it."""
     state.tick = max(state.tick, event.tick)
     if event.event_type in NON_WORLD_EVENTS:
-        state.applied_event_ids.append(event.event_id)
         return
     if event.event_type == "world.created":
         state.flags.update(deepcopy(event.payload.get("flags", {})))
@@ -59,6 +58,8 @@ def apply_world_in_place(state: WorldProjection, event: Event) -> None:
         state.flags[event.payload["name"]] = deepcopy(event.payload["value"])
     else:
         raise ValueError(f"no reducer registered for event type: {event.event_type}")
+    # Track only events that actually participate in this projection. Keeping every
+    # timeline event ID here made replay itself quadratic without adding world state.
     state.applied_event_ids.append(event.event_id)
 
 
