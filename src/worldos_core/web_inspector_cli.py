@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .web_console import serve_world_console
+from .web_console_extensions import serve_world_console
 
 
 def main() -> None:
