@@ -165,7 +165,7 @@ def test_help_creates_obligation_then_debtor_autonomously_repays():
     )
 
 
-def test_unfulfilled_obligation_defaults_and_creates_grievance():
+def test_unfulfilled_resource_debt_creates_rivalry_before_enemy_escalation():
     store = InMemoryEventStore()
     store.append_batch(
         "main",
@@ -220,7 +220,7 @@ def test_unfulfilled_obligation_defaults_and_creates_grievance():
     creditor_view = social.bond("甲", "乙")
     assert creditor_view.grievance >= 12
     assert creditor_view.trust < 0
-    assert creditor_view.label() == "enemy"
+    assert creditor_view.label() == "rival"
 
     world = replay_world(history)
     assert world.entities["甲"].components["relationships"]["乙"] <= -10
@@ -230,6 +230,45 @@ def test_unfulfilled_obligation_defaults_and_creates_grievance():
         and event.payload.get("fact_type") == "obligation.defaulted"
         for event in history
     )
+
+
+def test_unreturned_favor_only_cools_trust():
+    store = InMemoryEventStore()
+    store.append_batch(
+        "main",
+        [
+            _actor("甲"),
+            _actor("乙", food=0),
+            NewEvent(
+                tick=0,
+                phase="social",
+                event_type="obligation.created",
+                actor_id="乙",
+                subject_ids=("乙", "甲"),
+                payload={
+                    "obligation_id": "obl_soft_favor",
+                    "debtor_id": "乙",
+                    "creditor_id": "甲",
+                    "kind": "favor",
+                    "resource": "food",
+                    "quantity": 1,
+                    "created_tick": 0,
+                    "due_tick": 1,
+                    "status": "open",
+                },
+            ),
+        ],
+        expected_sequence=0,
+    )
+    engine = DeterministicTickEngine(store, world_seed="favor-loop")
+    engine.run_tick("main", 1)
+
+    social = replay_social(store.read("main"))
+    creditor_view = social.bond("甲", "乙")
+    assert social.obligations["obl_soft_favor"].status == "defaulted"
+    assert creditor_view.grievance == 3
+    assert creditor_view.trust == -4
+    assert creditor_view.label() == "stranger"
 
 
 def test_inspector_exposes_bonds_and_obligations():
