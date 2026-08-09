@@ -139,26 +139,54 @@ class GoalPlanner:
         )
 
 
+_PLANNING_EVENTS = {
+    "goal.created",
+    "goal.status_changed",
+    "plan.step_created",
+    "plan.step_status_changed",
+}
+
+
 def reduce_planning(state: PlannerProjection, event: Event) -> PlannerProjection:
-    next_state = state.model_copy(deep=True)
+    if event.event_type not in _PLANNING_EVENTS:
+        return state
+
+    applied = [*state.applied_event_ids, event.event_id]
+
     if event.event_type == "goal.created":
         goal = Goal(**event.payload)
-        next_state.goals_by_owner.setdefault(goal.owner_id, {})[goal.goal_id] = goal
-    elif event.event_type == "goal.status_changed":
+        owner_goals = dict(state.goals_by_owner.get(goal.owner_id, {}))
+        owner_goals[goal.goal_id] = goal
+        goals_by_owner = dict(state.goals_by_owner)
+        goals_by_owner[goal.owner_id] = owner_goals
+        return state.model_copy(update={"goals_by_owner": goals_by_owner, "applied_event_ids": applied})
+
+    if event.event_type == "goal.status_changed":
         owner_id = event.payload["owner_id"]
         goal_id = event.payload["goal_id"]
-        next_state.goals_by_owner[owner_id][goal_id].status = event.payload["status"]
-    elif event.event_type == "plan.step_created":
+        current = state.goals_by_owner[owner_id][goal_id]
+        owner_goals = dict(state.goals_by_owner[owner_id])
+        owner_goals[goal_id] = current.model_copy(update={"status": event.payload["status"]})
+        goals_by_owner = dict(state.goals_by_owner)
+        goals_by_owner[owner_id] = owner_goals
+        return state.model_copy(update={"goals_by_owner": goals_by_owner, "applied_event_ids": applied})
+
+    if event.event_type == "plan.step_created":
         step = PlanStep(**event.payload)
-        next_state.steps_by_goal.setdefault(step.goal_id, {})[step.step_id] = step
-    elif event.event_type == "plan.step_status_changed":
-        goal_id = event.payload["goal_id"]
-        step_id = event.payload["step_id"]
-        next_state.steps_by_goal[goal_id][step_id].status = event.payload["status"]
-    else:
-        return next_state
-    next_state.applied_event_ids.append(event.event_id)
-    return next_state
+        goal_steps = dict(state.steps_by_goal.get(step.goal_id, {}))
+        goal_steps[step.step_id] = step
+        steps_by_goal = dict(state.steps_by_goal)
+        steps_by_goal[step.goal_id] = goal_steps
+        return state.model_copy(update={"steps_by_goal": steps_by_goal, "applied_event_ids": applied})
+
+    goal_id = event.payload["goal_id"]
+    step_id = event.payload["step_id"]
+    current = state.steps_by_goal[goal_id][step_id]
+    goal_steps = dict(state.steps_by_goal[goal_id])
+    goal_steps[step_id] = current.model_copy(update={"status": event.payload["status"]})
+    steps_by_goal = dict(state.steps_by_goal)
+    steps_by_goal[goal_id] = goal_steps
+    return state.model_copy(update={"steps_by_goal": steps_by_goal, "applied_event_ids": applied})
 
 
 def replay_planning(events: list[Event], initial: PlannerProjection | None = None) -> PlannerProjection:
