@@ -40,12 +40,37 @@ class MotivationEngine:
             if entity.active and entity.kind == "character"
         }
         for owner_id, actor in actors.items():
+            personality = self._profile(actor.components.get("personality"), owner_id)
+            drives = self._drives(actor.components.get("drives"), owner_id)
+            if "personality" not in actor.components:
+                events.append(
+                    NewEvent(
+                        tick=tick,
+                        phase="cognition",
+                        event_type="entity.component_set",
+                        actor_id=owner_id,
+                        subject_ids=(owner_id,),
+                        payload={"component": "personality", "value": personality},
+                    )
+                )
+            if "drives" not in actor.components:
+                events.append(
+                    NewEvent(
+                        tick=tick,
+                        phase="cognition",
+                        event_type="entity.component_set",
+                        actor_id=owner_id,
+                        subject_ids=(owner_id,),
+                        payload={"component": "drives", "value": drives},
+                    )
+                )
+
             if not self._due(owner_id, tick) or self._survival_is_urgent(actor):
                 continue
             if any(goal.parameters.get("source_motivation") for goal in planning.active_goals(owner_id)):
                 continue
 
-            candidates = self._candidates(owner_id, actor, actors)
+            candidates = self._candidates(owner_id, actor, actors, personality, drives)
             if not candidates:
                 continue
             candidates.sort(
@@ -112,10 +137,10 @@ class MotivationEngine:
         owner_id: str,
         actor: EntityProjection,
         actors: dict[str, EntityProjection],
+        personality: dict[str, int],
+        drives: dict[str, int],
     ) -> list[MotivationCandidate]:
         components = actor.components
-        personality = self._profile(components.get("personality"))
-        drives = self._drives(components.get("drives"))
         relationships = components.get("relationships", {})
         if not isinstance(relationships, dict):
             relationships = {}
@@ -237,24 +262,37 @@ class MotivationEngine:
         )
 
     @staticmethod
-    def _profile(raw: Any) -> dict[str, int]:
-        source = raw if isinstance(raw, dict) else {}
+    def _stable_traits(owner_id: str, channel: str, names: tuple[str, ...]) -> dict[str, int]:
+        digest = hashlib.sha256(f"{owner_id}:{channel}".encode("utf-8")).digest()
         return {
-            "sociability": MotivationEngine._clamp(source.get("sociability", 50), 0, 100),
-            "generosity": MotivationEngine._clamp(source.get("generosity", 50), 0, 100),
-            "assertiveness": MotivationEngine._clamp(source.get("assertiveness", 50), 0, 100),
-            "risk_tolerance": MotivationEngine._clamp(source.get("risk_tolerance", 50), 0, 100),
+            name: 25 + digest[index % len(digest)] % 61
+            for index, name in enumerate(names)
         }
 
     @staticmethod
-    def _drives(raw: Any) -> dict[str, int]:
+    def _profile(raw: Any, owner_id: str) -> dict[str, int]:
+        defaults = MotivationEngine._stable_traits(
+            owner_id,
+            "personality",
+            ("sociability", "generosity", "assertiveness", "risk_tolerance"),
+        )
         source = raw if isinstance(raw, dict) else {}
         return {
-            "security": MotivationEngine._clamp(source.get("security", 55), 0, 100),
-            "belonging": MotivationEngine._clamp(source.get("belonging", 50), 0, 100),
-            "status": MotivationEngine._clamp(source.get("status", 45), 0, 100),
-            "wealth": MotivationEngine._clamp(source.get("wealth", 50), 0, 100),
-            "curiosity": MotivationEngine._clamp(source.get("curiosity", 50), 0, 100),
+            key: MotivationEngine._clamp(source.get(key, value), 0, 100)
+            for key, value in defaults.items()
+        }
+
+    @staticmethod
+    def _drives(raw: Any, owner_id: str) -> dict[str, int]:
+        defaults = MotivationEngine._stable_traits(
+            owner_id,
+            "drives",
+            ("security", "belonging", "status", "wealth", "curiosity"),
+        )
+        source = raw if isinstance(raw, dict) else {}
+        return {
+            key: MotivationEngine._clamp(source.get(key, value), 0, 100)
+            for key, value in defaults.items()
         }
 
     @staticmethod
