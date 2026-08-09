@@ -59,50 +59,85 @@ NON_WORLD_EVENTS = {
     "runner.recovered",
 }
 
+_WORLD_EVENT_TYPES = {
+    "world.created",
+    "entity.created",
+    "entity.component_set",
+    "entity.component_removed",
+    "entity.moved",
+    "health.changed",
+    "entity.deactivated",
+    "world.flag_set",
+}
+
 
 def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
-    next_state = state.model_copy(deep=True)
-    next_state.tick = max(next_state.tick, event.tick)
-
+    # World replay sees every event in the timeline. Most events do not mutate the
+    # world projection, so avoid copying the full entity graph for them.
     if event.event_type in NON_WORLD_EVENTS:
-        pass
-    elif event.event_type == "world.created":
-        next_state.flags.update(event.payload.get("flags", {}))
-    elif event.event_type == "entity.created":
-        entity_id = _single_subject(event)
-        if entity_id in next_state.entities:
-            raise ValueError(f"entity already exists: {entity_id}")
-        next_state.entities[entity_id] = EntityProjection(entity_id=entity_id, kind=event.payload["kind"], components=deepcopy(event.payload.get("components", {})))
-    elif event.event_type == "entity.component_set":
-        entity = _entity(next_state, _single_subject(event))
-        entity.components[event.payload["component"]] = deepcopy(event.payload["value"])
-    elif event.event_type == "entity.component_removed":
-        entity = _entity(next_state, _single_subject(event))
-        entity.components.pop(event.payload["component"], None)
-    elif event.event_type == "entity.moved":
-        entity = _entity(next_state, _single_subject(event))
-        entity.components["position"] = {"location_id": event.payload["to_location_id"]}
-    elif event.event_type == "health.changed":
-        entity = _entity(next_state, _single_subject(event))
-        health = deepcopy(entity.components.get("health", {"current": 100, "maximum": 100}))
-        health["current"] = max(0, min(health["maximum"], health["current"] + event.payload["delta"]))
-        entity.components["health"] = health
-    elif event.event_type == "entity.deactivated":
-        _entity(next_state, _single_subject(event)).active = False
-    elif event.event_type == "world.flag_set":
-        next_state.flags[event.payload["name"]] = deepcopy(event.payload["value"])
-    else:
+        if event.tick <= state.tick:
+            return state
+        return state.model_copy(update={"tick": event.tick})
+    if event.event_type not in _WORLD_EVENT_TYPES:
         raise ValueError(f"no reducer registered for event type: {event.event_type}")
 
-    next_state.applied_event_ids.append(event.event_id)
-    return next_state
+    next_tick = max(state.tick, event.tick)
+    next_applied = [*state.applied_event_ids, event.event_id]
+
+    if event.event_type == "world.created":
+        flags = dict(state.flags)
+        flags.update(deepcopy(event.payload.get("flags", {})))
+        return state.model_copy(update={"tick": next_tick, "flags": flags, "applied_event_ids": next_applied})
+
+    if event.event_type == "world.flag_set":
+        flags = dict(state.flags)
+        flags[event.payload["name"]] = deepcopy(event.payload["value"])
+        return state.model_copy(update={"tick": next_tick, "flags": flags, "applied_event_ids": next_applied})
+
+    entity_id = _single_subject(event)
+    entities = dict(state.entities)
+
+    if event.event_type == "entity.created":
+        if entity_id in entities:
+            raise ValueError(f"entity already exists: {entity_id}")
+        entities[entity_id] = EntityProjection(
+            entity_id=entity_id,
+            kind=event.payload["kind"],
+            components=deepcopy(event.payload.get("components", {})),
+        )
+        return state.model_copy(update={"tick": next_tick, "entities": entities, "applied_event_ids": next_applied})
+
+    current = _entity(state, entity_id)
+    if event.event_type == "entity.deactivated":
+        updated = current.model_copy(update={"active": False})
+    else:
+        components = dict(current.components)
+        if event.event_type == "entity.component_set":
+            components[event.payload["component"]] = deepcopy(event.payload["value"])
+        elif event.event_type == "entity.component_removed":
+            components.pop(event.payload["component"], None)
+        elif event.event_type == "entity.moved":
+            components["position"] = {"location_id": event.payload["to_location_id"]}
+        elif event.event_type == "health.changed":
+            health = deepcopy(components.get("health", {"current": 100, "maximum": 100}))
+            health["current"] = max(0, min(health["maximum"], health["current"] + event.payload["delta"]))
+            components["health"] = health
+        else:  # guarded by _WORLD_EVENT_TYPES above
+            raise ValueError(f"no reducer registered for event type: {event.event_type}")
+        updated = current.model_copy(update={"components": components})
+
+    entities[entity_id] = updated
+    return state.model_copy(update={"tick": next_tick, "entities": entities, "applied_event_ids": next_applied})
 
 
 def replay_world(events: list[Event], initial: WorldProjection | None = None) -> WorldProjection:
     state = initial.model_copy(deep=True) if initial else WorldProjection()
     for expected_sequence, event in enumerate(events, start=1):
         if event.sequence != expected_sequence:
-            raise ValueError(f"non-contiguous history at event {event.event_id}: expected sequence {expected_sequence}, got {event.sequence}")
+            raise ValueError(
+                f"non-contiguous history at event {event.event_id}: "
+                f"expected sequence {expected_sequence}, got {event.sequence}"
+            )
         state = reduce_event(state, event)
     return state
 
