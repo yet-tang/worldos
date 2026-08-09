@@ -66,11 +66,10 @@ class NarratorReadAPI:
         if from_sequence < 1:
             raise ValueError("from_sequence must be at least 1")
 
-        snapshot = self._inspector.snapshot(timeline_id, through_sequence=through_sequence)
+        projections = self._inspector.bundle(timeline_id, through_sequence=through_sequence)
+        snapshot = self._inspector.snapshot(timeline_id, bundle=projections)
         visible_events = [
-            event
-            for event in self._inspector.events(timeline_id, through_sequence=through_sequence)
-            if event.sequence >= from_sequence
+            event for event in projections.events if event.sequence >= from_sequence
         ]
 
         if perspective_actor_id is None:
@@ -85,7 +84,7 @@ class NarratorReadAPI:
         actor = self._inspector.actor(
             perspective_actor_id,
             timeline_id,
-            through_sequence=through_sequence,
+            bundle=projections,
         )
         observed_source_ids = {
             observation.source_event_id
@@ -93,9 +92,7 @@ class NarratorReadAPI:
             if observation.source_event_id
         }
         actor_visible_events = [
-            event
-            for event in visible_events
-            if event.event_id in observed_source_ids
+            event for event in visible_events if event.event_id in observed_source_ids
         ]
 
         return NarrativeContext(

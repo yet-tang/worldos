@@ -43,13 +43,7 @@ class RunResult:
 
 
 class WorldRunner:
-    """Persistent controller for deterministic WorldOS timelines.
-
-    Runner control events are audit-only. Authoritative world changes remain owned by
-    the tick engine and world modules. If a process dies after ``tick.started`` but
-    before ``tick.completed``, recovery creates a branch immediately before the
-    incomplete tick and continues there, preserving the damaged history for audit.
-    """
+    """Persistent controller for deterministic WorldOS timelines."""
 
     def __init__(
         self,
@@ -118,17 +112,21 @@ class WorldRunner:
     def step(self, count: int = 1, *, force: bool = True) -> RunResult:
         if count < 0:
             raise ValueError("count must be non-negative")
+
+        history = self.store.read(self.timeline_id)
+        if self._paused(history) and not force:
+            return RunResult(self.timeline_id, (), self.status())
+
+        next_tick = self._last_completed_tick(history) + 1
         results: list[TickResult] = []
         started = time.perf_counter()
         for _ in range(count):
-            current = self.status()
-            if current.paused and not force:
-                break
-            tick = current.last_completed_tick + 1
-            result = self.engine.run_tick(self.timeline_id, tick)
+            result = self.engine.run_tick(self.timeline_id, next_tick)
             results.append(result)
-            if self.snapshot_interval and tick % self.snapshot_interval == 0:
+            if self.snapshot_interval and next_tick % self.snapshot_interval == 0:
                 self.save_snapshot()
+            next_tick += 1
+
         elapsed = time.perf_counter() - started
         events = sum(len(result.committed_events) for result in results)
         total_ticks = self._metrics.ticks_run + len(results)
@@ -143,7 +141,7 @@ class WorldRunner:
         return RunResult(self.timeline_id, tuple(results), self.status())
 
     def run(self, ticks: int) -> RunResult:
-        """Run at most ``ticks`` ticks, stopping early when the timeline is paused."""
+        """Run at most ``ticks`` ticks, stopping immediately when already paused."""
         return self.step(ticks, force=False)
 
     def save_snapshot(self) -> int:
@@ -171,6 +169,7 @@ class WorldRunner:
         )
         if switch:
             self.timeline_id = timeline_id
+            self.engine.invalidate_cache()
         return timeline_id
 
     def recover(self) -> str | None:
@@ -195,6 +194,7 @@ class WorldRunner:
             parent_through_sequence=cutoff,
         )
         self.timeline_id = recovery_timeline
+        self.engine.invalidate_cache()
         self._recovered_from_timeline = source_timeline
         self._append_control(
             "runner.recovered",
@@ -229,8 +229,6 @@ class WorldRunner:
             [event],
             expected_sequence=len(history),
         )[0]
-        # Control events are written outside the tick engine. Drop its cached history
-        # so the next tick observes the new sequence and preserves optimistic locking.
         self.engine.invalidate_cache(self.timeline_id)
         return committed
 
