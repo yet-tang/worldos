@@ -3,7 +3,7 @@ name = "worldos-core"
 version = "0.1.0"
 description = "Event-sourced deterministic kernel for WorldOS."
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.7,<3"]
+dependencies = ["pydantic>=2.7,<3", "mcp>=1.23,<2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
@@ -13,6 +13,7 @@ worldos-core = "worldos_core.cli:main"
 worldos-inspector = "worldos_core.web_inspector_cli:main"
 worldos-living = "worldos_core.living_world_cli:main"
 worldos-create = "worldos_core.world_creator_cli:main"
+worldos-mcp = "worldos_core.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -60,6 +60,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - name: Validate compose configuration
+        run: docker compose config >/dev/null
+
       - name: Build local validation image
         uses: docker/build-push-action@v6
         with:
@@ -91,7 +94,7 @@ jobs:
             -v /tmp/worldos-data:/data \
             -v /tmp/worldos-backups:/backups \
             worldos:validation inspector
-          trap 'docker rm -f worldos-inspector >/dev/null 2>&1 || true' EXIT
+          trap 'docker rm -f worldos-inspector worldos-mcp >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:18765/ >/dev/null; then
               break
@@ -99,6 +102,43 @@ jobs:
             sleep 1
           done
           curl --fail --silent http://127.0.0.1:18765/ >/dev/null
+
+          MCP_TOKEN="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          docker run -d --name worldos-mcp \
+            -p 127.0.0.1:18766:8766 \
+            -e WORLDOS_MCP_TOKEN="$MCP_TOKEN" \
+            -e WORLDOS_MCP_PUBLIC_URL="http://127.0.0.1:8766/mcp" \
+            -e WORLDOS_MCP_ISSUER_URL="http://127.0.0.1:8766/auth" \
+            -v /tmp/worldos-data:/data \
+            worldos:validation mcp
+          for attempt in $(seq 1 30); do
+            if docker exec worldos-mcp python -c "import socket; s=socket.create_connection(('127.0.0.1',8766),2); s.close()"; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST http://127.0.0.1:18766/mcp)" = "401"
+          docker exec -e MCP_TOKEN="$MCP_TOKEN" worldos-mcp python - <<'PY'
+          import asyncio
+          import os
+          from mcp import ClientSession
+          from mcp.client.streamable_http import streamablehttp_client
+
+          async def main():
+              headers = {"Authorization": f"Bearer {os.environ['MCP_TOKEN']}"}
+              async with streamablehttp_client("http://127.0.0.1:8766/mcp", headers=headers) as (read, write, _):
+                  async with ClientSession(read, write) as session:
+                      await session.initialize()
+                      tools = await session.list_tools()
+                      names = {tool.name for tool in tools.tools}
+                      required = {"worldos_health", "list_worlds", "probe_world", "inspect_actor", "query_events"}
+                      missing = required - names
+                      if missing:
+                          raise SystemExit(f"missing MCP tools: {sorted(missing)}")
+
+          asyncio.run(main())
+          PY
+
           docker run --rm \
             -v /tmp/worldos-data:/data \
             -v /tmp/worldos-backups:/backups \
