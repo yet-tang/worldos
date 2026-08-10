@@ -28,10 +28,34 @@ services:
       - worldos-internal
     restart: unless-stopped
 
+  mcp:
+    <<: *worldos-common
+    command: ["mcp"]
+    environment:
+      WORLDOS_DB: /data/world.db
+      WORLDOS_MCP_HOST: 0.0.0.0
+      WORLDOS_MCP_PORT: 8766
+      WORLDOS_MCP_TOKEN: ${WORLDOS_MCP_TOKEN:-}
+      WORLDOS_MCP_PUBLIC_URL: ${WORLDOS_MCP_PUBLIC_URL:-https://worldos.255202.xyz/mcp}
+      WORLDOS_MCP_ISSUER_URL: ${WORLDOS_MCP_ISSUER_URL:-https://worldos.255202.xyz/auth}
+    expose:
+      - "8766"
+    networks:
+      - worldos-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',8766),3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
   proxy:
     image: nginx:1.27-alpine
     depends_on:
       inspector:
+        condition: service_healthy
+      mcp:
         condition: service_healthy
     ports:
       - "${WORLDOS_HTTP_BIND:-127.0.0.1:8080}:80"
