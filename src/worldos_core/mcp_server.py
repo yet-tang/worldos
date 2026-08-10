@@ -130,9 +130,8 @@ def build_mcp() -> FastMCP:
 
 
 def main() -> None:
-    token = os.environ.get("WORLDOS_MCP_TOKEN", "").strip()
-    if len(token) < 32:
-        raise SystemExit("WORLDOS_MCP_TOKEN must contain at least 32 characters")
+    # The process stays healthy even before a token is configured. The verifier
+    # rejects every request until WORLDOS_MCP_TOKEN is a valid secret.
     build_mcp().run(transport="streamable-http")
 
 
