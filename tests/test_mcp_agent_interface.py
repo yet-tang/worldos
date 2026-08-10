@@ -36,7 +36,7 @@ def test_world_read_service_exposes_semantic_world_views(tmp_path) -> None:
 
     actor_id = probe["actors"][0]["actor_id"]
     actor = service.inspect_actor(descriptor.world_id, actor_id)
-    assert actor["entity_id"] == actor_id or actor.get("actor_id") == actor_id
+    assert actor["actor_id"] == actor_id
 
     events = service.query_events(descriptor.world_id, event_type="entity.created", limit=10)
     assert events["matched"] >= 7
