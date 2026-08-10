@@ -30,6 +30,10 @@ _CONTROL_LOCKS_GUARD = threading.Lock()
 _MAX_TICKS = 10_000
 
 
+class ControlPreconditionError(RuntimeError):
+    """A conflict known to happen before any world mutation is attempted."""
+
+
 def _control_token() -> str:
     return os.environ.get("WORLDOS_CONTROL_TOKEN", "").strip()
 
@@ -71,7 +75,7 @@ def _require_expected_hash(payload: dict[str, Any], state: dict[str, Any]) -> No
     if not expected:
         raise ValueError("expected_world_hash is required for mutations")
     if expected != state["world_hash"]:
-        raise RuntimeError(
+        raise ControlPreconditionError(
             f"world hash conflict: expected {expected}, current {state['world_hash']}"
         )
 
@@ -136,7 +140,7 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 self._dispatch_control_post(parsed.path, payload)
             except KeyError as exc:
                 self._send(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-            except (CommandKeyConflict, CommandOutcomeUnknown, RuntimeError) as exc:
+            except (CommandKeyConflict, CommandOutcomeUnknown, ControlPreconditionError) as exc:
                 self._send(HTTPStatus.CONFLICT, {"error": str(exc)})
             except (TypeError, ValueError) as exc:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -156,30 +160,37 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
             if not self._authorize_control(query):
                 return
 
-            world_id = unquote(parsed.path.removeprefix(CONTROL_PREFIX + "/worlds/")).strip("/")
-            if not world_id or "/" in world_id:
-                self._send(HTTPStatus.BAD_REQUEST, {"error": "invalid world_id"})
-                return
-            idempotency_key = self._idempotency_key({})
-            if_match = self.headers.get("If-Match", "").strip().strip('"')
-            if not if_match:
-                self._send(HTTPStatus.BAD_REQUEST, {"error": "If-Match world hash is required for deletion"})
-                return
-            fingerprint = ControlCommandLedger.fingerprint(
-                "DELETE", parsed.path, None, if_match=if_match
-            )
+            try:
+                world_id = unquote(parsed.path.removeprefix(CONTROL_PREFIX + "/worlds/")).strip("/")
+                if not world_id or "/" in world_id:
+                    raise ValueError("invalid world_id")
+                idempotency_key = self._idempotency_key({})
+                if_match = self.headers.get("If-Match", "").strip().strip('"')
+                if not if_match:
+                    raise ValueError("If-Match world hash is required for deletion")
+                fingerprint = ControlCommandLedger.fingerprint(
+                    "DELETE", parsed.path, None, if_match=if_match
+                )
 
-            def mutate() -> tuple[HTTPStatus, dict[str, Any]]:
-                descriptor = catalog.get(world_id)
-                state = _current_state(descriptor.database_path)
-                if if_match != state["world_hash"]:
-                    raise RuntimeError(
-                        f"world hash conflict: expected {if_match}, current {state['world_hash']}"
-                    )
-                deleted = catalog.delete(world_id)
-                return HTTPStatus.OK, {"deleted": deleted.world_id, "previous_state": state}
+                def mutate() -> tuple[HTTPStatus, dict[str, Any]]:
+                    descriptor = catalog.get(world_id)
+                    state = _current_state(descriptor.database_path)
+                    if if_match != state["world_hash"]:
+                        raise ControlPreconditionError(
+                            f"world hash conflict: expected {if_match}, current {state['world_hash']}"
+                        )
+                    deleted = catalog.delete(world_id)
+                    return HTTPStatus.OK, {"deleted": deleted.world_id, "previous_state": state}
 
-            self._run_idempotent(idempotency_key, fingerprint, "DELETE", parsed.path, mutate)
+                self._run_idempotent(idempotency_key, fingerprint, "DELETE", parsed.path, mutate)
+            except KeyError as exc:
+                self._send(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (CommandKeyConflict, CommandOutcomeUnknown, ControlPreconditionError) as exc:
+                self._send(HTTPStatus.CONFLICT, {"error": str(exc)})
+            except (TypeError, ValueError) as exc:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception as exc:
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
         def _authorize_control(self, query: dict[str, list[str]]) -> bool:
             configured = _control_token()
@@ -238,10 +249,7 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                     )
                     return
 
-            mutation_started = False
             try:
-                # mutate() performs all fail-closed validation before its first write.
-                mutation_started = True
                 status, response = mutate()
                 with ControlCommandLedger(ledger_path) as ledger:
                     ledger.complete(
@@ -250,17 +258,14 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                         response=response,
                     )
                 self._send(status, response)
-            except (KeyError, TypeError, ValueError, RuntimeError, CommandKeyConflict):
-                # These exceptions are expected validation/concurrency failures in the
-                # current implementation and happen before a committed side effect.
-                # RuntimeError is only raised by explicit pre-write guards here.
-                if mutation_started:
-                    with ControlCommandLedger(ledger_path) as ledger:
-                        ledger.release(idempotency_key)
+            except (KeyError, TypeError, ValueError, ControlPreconditionError):
+                # These failures are guaranteed to occur before the command's first write.
+                with ControlCommandLedger(ledger_path) as ledger:
+                    ledger.release(idempotency_key)
                 raise
             except Exception:
-                # Unknown failures are deliberately NOT released. A command may have
-                # committed before the process/handler failed, so retries must fail closed.
+                # Unknown failures deliberately leave the reservation in_progress. The
+                # mutation may have committed before the failure, so retrying must fail closed.
                 raise
 
         def _dispatch_control_post(self, path: str, payload: dict[str, Any]) -> None:
@@ -296,8 +301,6 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
             world_id, action = parts
             timeline = str(payload.get("timeline_id") or "main")
 
-            # Validate command-specific shape before reserving the key. Replays still work
-            # after the target world disappears because descriptor lookup happens in mutate.
             ticks: int | None = None
             branch_id = ""
             through_sequence: Any = None
@@ -329,7 +332,7 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 database = Path(descriptor.database_path)
                 lock = _lock_for(database)
                 if not lock.acquire(blocking=False):
-                    raise RuntimeError("world is busy")
+                    raise ControlPreconditionError("world is busy")
                 try:
                     before = _current_state(database, timeline)
                     _require_expected_hash(payload, before)
