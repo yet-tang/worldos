@@ -7,9 +7,14 @@ import json
 import os
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .control_ledger import (
+    CommandKeyConflict,
+    CommandOutcomeUnknown,
+    ControlCommandLedger,
+)
 from .events import NewEvent
 from .inspector import WorldInspector
 from .runner import WorldRunner
@@ -23,6 +28,10 @@ CONTROL_PREFIX = "/api/control"
 _CONTROL_LOCKS: dict[str, threading.Lock] = {}
 _CONTROL_LOCKS_GUARD = threading.Lock()
 _MAX_TICKS = 10_000
+
+
+class ControlPreconditionError(RuntimeError):
+    """A conflict known to happen before any world mutation is attempted."""
 
 
 def _control_token() -> str:
@@ -66,7 +75,7 @@ def _require_expected_hash(payload: dict[str, Any], state: dict[str, Any]) -> No
     if not expected:
         raise ValueError("expected_world_hash is required for mutations")
     if expected != state["world_hash"]:
-        raise RuntimeError(
+        raise ControlPreconditionError(
             f"world hash conflict: expected {expected}, current {state['world_hash']}"
         )
 
@@ -74,25 +83,48 @@ def _require_expected_hash(payload: dict[str, Any], state: dict[str, Any]) -> No
 def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandler]:
     legacy_database = Path(database_path)
     catalog = WorldCatalog(legacy_database.parent, legacy_db_path=legacy_database)
+    ledger_path = legacy_database.parent / "control_commands.db"
     BaseHandler = make_debug_console_handler(database_path)
 
     class Handler(BaseHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path in {CONTROL_PREFIX, CONTROL_PREFIX + "/", CONTROL_PREFIX + "/health"}:
+            if parsed.path == CONTROL_PREFIX or parsed.path.startswith(CONTROL_PREFIX + "/"):
                 query = parse_qs(parsed.query)
                 if not self._authorize_control(query):
                     return
-                self._send(
-                    HTTPStatus.OK,
-                    {
-                        "ok": True,
-                        "write_enabled": True,
-                        "max_ticks_per_request": _MAX_TICKS,
-                        "capabilities": ["create-world", "advance", "branch", "inject-event", "delete-world"],
-                    },
-                )
-                return
+                if parsed.path in {CONTROL_PREFIX, CONTROL_PREFIX + "/", CONTROL_PREFIX + "/health"}:
+                    self._send(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "write_enabled": True,
+                            "persistent_idempotency": True,
+                            "max_ticks_per_request": _MAX_TICKS,
+                            "capabilities": [
+                                "create-world",
+                                "advance",
+                                "branch",
+                                "inject-event",
+                                "delete-world",
+                                "command-status",
+                            ],
+                        },
+                    )
+                    return
+                command_prefix = CONTROL_PREFIX + "/commands/"
+                if parsed.path.startswith(command_prefix):
+                    key = unquote(parsed.path.removeprefix(command_prefix)).strip("/")
+                    if not key or "/" in key:
+                        self._send(HTTPStatus.BAD_REQUEST, {"error": "invalid idempotency_key"})
+                        return
+                    with ControlCommandLedger(ledger_path) as ledger:
+                        command = ledger.get(key)
+                    if command is None:
+                        self._send(HTTPStatus.NOT_FOUND, {"error": "unknown command"})
+                    else:
+                        self._send(HTTPStatus.OK, command)
+                    return
             super().do_GET()
 
         def do_POST(self) -> None:  # noqa: N802
@@ -108,7 +140,7 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 self._dispatch_control_post(parsed.path, payload)
             except KeyError as exc:
                 self._send(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-            except RuntimeError as exc:
+            except (CommandKeyConflict, CommandOutcomeUnknown, ControlPreconditionError) as exc:
                 self._send(HTTPStatus.CONFLICT, {"error": str(exc)})
             except (TypeError, ValueError) as exc:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -127,27 +159,38 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
             query = parse_qs(parsed.query)
             if not self._authorize_control(query):
                 return
+
             try:
                 world_id = unquote(parsed.path.removeprefix(CONTROL_PREFIX + "/worlds/")).strip("/")
                 if not world_id or "/" in world_id:
                     raise ValueError("invalid world_id")
-                descriptor = catalog.get(world_id)
-                state = _current_state(descriptor.database_path)
-                expected = self.headers.get("If-Match", "").strip().strip('"')
-                if not expected:
+                idempotency_key = self._idempotency_key({})
+                if_match = self.headers.get("If-Match", "").strip().strip('"')
+                if not if_match:
                     raise ValueError("If-Match world hash is required for deletion")
-                if expected != state["world_hash"]:
-                    raise RuntimeError(
-                        f"world hash conflict: expected {expected}, current {state['world_hash']}"
-                    )
-                deleted = catalog.delete(world_id)
-                self._send(HTTPStatus.OK, {"deleted": deleted.world_id, "previous_state": state})
+                fingerprint = ControlCommandLedger.fingerprint(
+                    "DELETE", parsed.path, None, if_match=if_match
+                )
+
+                def mutate() -> tuple[HTTPStatus, dict[str, Any]]:
+                    descriptor = catalog.get(world_id)
+                    state = _current_state(descriptor.database_path)
+                    if if_match != state["world_hash"]:
+                        raise ControlPreconditionError(
+                            f"world hash conflict: expected {if_match}, current {state['world_hash']}"
+                        )
+                    deleted = catalog.delete(world_id)
+                    return HTTPStatus.OK, {"deleted": deleted.world_id, "previous_state": state}
+
+                self._run_idempotent(idempotency_key, fingerprint, "DELETE", parsed.path, mutate)
             except KeyError as exc:
                 self._send(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-            except RuntimeError as exc:
+            except (CommandKeyConflict, CommandOutcomeUnknown, ControlPreconditionError) as exc:
                 self._send(HTTPStatus.CONFLICT, {"error": str(exc)})
             except (TypeError, ValueError) as exc:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception as exc:
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
         def _authorize_control(self, query: dict[str, list[str]]) -> bool:
             configured = _control_token()
@@ -175,7 +218,59 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 raise ValueError("request body must be a JSON object")
             return payload
 
+        def _idempotency_key(self, payload: dict[str, Any]) -> str:
+            key = self.headers.get("Idempotency-Key", "").strip()
+            if not key:
+                key = str(payload.get("idempotency_key") or "").strip()
+            if not key:
+                raise ValueError("idempotency_key is required for mutations")
+            return key
+
+        def _run_idempotent(
+            self,
+            idempotency_key: str,
+            fingerprint: str,
+            method: str,
+            path: str,
+            mutate: Callable[[], tuple[HTTPStatus, dict[str, Any]]],
+        ) -> None:
+            with ControlCommandLedger(ledger_path) as ledger:
+                replay = ledger.reserve(
+                    idempotency_key,
+                    fingerprint,
+                    method=method,
+                    path=path,
+                )
+                if replay is not None:
+                    self._send(
+                        HTTPStatus(replay.status_code),
+                        replay.response,
+                        extra_headers={"Idempotency-Replayed": "true"},
+                    )
+                    return
+
+            try:
+                status, response = mutate()
+                with ControlCommandLedger(ledger_path) as ledger:
+                    ledger.complete(
+                        idempotency_key,
+                        status_code=int(status),
+                        response=response,
+                    )
+                self._send(status, response)
+            except (KeyError, TypeError, ValueError, ControlPreconditionError):
+                # These failures are guaranteed to occur before the command's first write.
+                with ControlCommandLedger(ledger_path) as ledger:
+                    ledger.release(idempotency_key)
+                raise
+            except Exception:
+                # Unknown failures deliberately leave the reservation in_progress. The
+                # mutation may have committed before the failure, so retrying must fail closed.
+                raise
+
         def _dispatch_control_post(self, path: str, payload: dict[str, Any]) -> None:
+            idempotency_key = self._idempotency_key(payload)
+
             if path == CONTROL_PREFIX + "/worlds":
                 config_payload = payload.get("config", payload)
                 if not isinstance(config_payload, dict):
@@ -183,8 +278,16 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 config_payload = dict(config_payload)
                 config_payload.pop("reason", None)
                 config_payload.pop("idempotency_key", None)
-                descriptor = catalog.create(WorldConfig.model_validate(config_payload))
-                self._send(HTTPStatus.CREATED, {"world": _jsonable(descriptor)})
+                config = WorldConfig.model_validate(config_payload)
+                fingerprint = ControlCommandLedger.fingerprint("POST", path, payload)
+
+                def create_world() -> tuple[HTTPStatus, dict[str, Any]]:
+                    descriptor = catalog.create(config)
+                    return HTTPStatus.CREATED, {"world": _jsonable(descriptor)}
+
+                self._run_idempotent(
+                    idempotency_key, fingerprint, "POST", path, create_world
+                )
                 return
 
             prefix = CONTROL_PREFIX + "/worlds/"
@@ -196,30 +299,51 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                 self._send(HTTPStatus.NOT_FOUND, {"error": "control endpoint not found"})
                 return
             world_id, action = parts
-            descriptor = catalog.get(world_id)
-            database = Path(descriptor.database_path)
             timeline = str(payload.get("timeline_id") or "main")
-            lock = _lock_for(database)
-            if not lock.acquire(blocking=False):
-                raise RuntimeError("world is busy")
-            try:
-                before = _current_state(database, timeline)
-                _require_expected_hash(payload, before)
-                reason = str(payload.get("reason") or "remote control").strip()[:500]
-                idempotency_key = str(payload.get("idempotency_key") or "").strip()
-                if not idempotency_key:
-                    raise ValueError("idempotency_key is required for mutations")
 
-                if action == "advance":
-                    ticks = int(payload.get("ticks", 0))
-                    if ticks < 1 or ticks > _MAX_TICKS:
-                        raise ValueError(f"ticks must be between 1 and {_MAX_TICKS}")
-                    with WorldRunner(database, timeline_id=timeline) as runner:
-                        result = runner.step(ticks, force=True)
-                    after = _current_state(database, timeline)
-                    self._send(
-                        HTTPStatus.OK,
-                        {
+            ticks: int | None = None
+            branch_id = ""
+            through_sequence: Any = None
+            event: NewEvent | None = None
+            if action == "advance":
+                ticks = int(payload.get("ticks", 0))
+                if ticks < 1 or ticks > _MAX_TICKS:
+                    raise ValueError(f"ticks must be between 1 and {_MAX_TICKS}")
+            elif action == "branch":
+                branch_id = str(payload.get("branch_id") or "").strip()
+                if not branch_id:
+                    raise ValueError("branch_id is required")
+                through_sequence = payload.get("through_sequence")
+            elif action == "inject-event":
+                event_payload = payload.get("event")
+                if not isinstance(event_payload, dict):
+                    raise ValueError("event must be an object")
+                event = NewEvent.model_validate(event_payload)
+                if event.event_type in {"tick.started", "tick.completed"}:
+                    raise ValueError("tick boundary events cannot be injected")
+            else:
+                self._send(HTTPStatus.NOT_FOUND, {"error": "control endpoint not found"})
+                return
+
+            fingerprint = ControlCommandLedger.fingerprint("POST", path, payload)
+
+            def mutate_world() -> tuple[HTTPStatus, dict[str, Any]]:
+                descriptor = catalog.get(world_id)
+                database = Path(descriptor.database_path)
+                lock = _lock_for(database)
+                if not lock.acquire(blocking=False):
+                    raise ControlPreconditionError("world is busy")
+                try:
+                    before = _current_state(database, timeline)
+                    _require_expected_hash(payload, before)
+                    reason = str(payload.get("reason") or "remote control").strip()[:500]
+
+                    if action == "advance":
+                        assert ticks is not None
+                        with WorldRunner(database, timeline_id=timeline) as runner:
+                            result = runner.step(ticks, force=True)
+                        after = _current_state(database, timeline)
+                        return HTTPStatus.OK, {
                             "command": "advance",
                             "idempotency_key": idempotency_key,
                             "reason": reason,
@@ -227,51 +351,43 @@ def make_console_handler(database_path: str | Path) -> type[BaseHTTPRequestHandl
                             "ticks_run": len(result.tick_results),
                             "before": before,
                             "after": after,
-                        },
-                    )
-                    return
+                        }
 
-                if action == "branch":
-                    branch_id = str(payload.get("branch_id") or "").strip()
-                    if not branch_id:
-                        raise ValueError("branch_id is required")
-                    through_sequence = payload.get("through_sequence")
-                    with SQLiteEventStore(database) as store:
-                        created = store.create_timeline(
-                            branch_id,
-                            parent_timeline_id=timeline,
-                            parent_through_sequence=int(through_sequence) if through_sequence is not None else None,
-                        )
-                    self._send(HTTPStatus.CREATED, {"command": "branch", "timeline": _jsonable(created), "reason": reason})
-                    return
+                    if action == "branch":
+                        with SQLiteEventStore(database) as store:
+                            created = store.create_timeline(
+                                branch_id,
+                                parent_timeline_id=timeline,
+                                parent_through_sequence=int(through_sequence) if through_sequence is not None else None,
+                            )
+                        return HTTPStatus.CREATED, {
+                            "command": "branch",
+                            "idempotency_key": idempotency_key,
+                            "timeline": _jsonable(created),
+                            "reason": reason,
+                        }
 
-                if action == "inject-event":
-                    event_payload = payload.get("event")
-                    if not isinstance(event_payload, dict):
-                        raise ValueError("event must be an object")
-                    event = NewEvent.model_validate(event_payload)
-                    if event.event_type in {"tick.started", "tick.completed"}:
-                        raise ValueError("tick boundary events cannot be injected")
+                    assert action == "inject-event" and event is not None
                     with SQLiteEventStore(database) as store:
                         current = len(store.read(timeline))
-                        committed = store.append_batch(timeline, [event], expected_sequence=current)
+                        committed = store.append_batch(
+                            timeline, [event], expected_sequence=current
+                        )
                     after = _current_state(database, timeline)
-                    self._send(
-                        HTTPStatus.CREATED,
-                        {
-                            "command": "inject-event",
-                            "idempotency_key": idempotency_key,
-                            "reason": reason,
-                            "event": _jsonable(committed[0]),
-                            "before": before,
-                            "after": after,
-                        },
-                    )
-                    return
+                    return HTTPStatus.CREATED, {
+                        "command": "inject-event",
+                        "idempotency_key": idempotency_key,
+                        "reason": reason,
+                        "event": _jsonable(committed[0]),
+                        "before": before,
+                        "after": after,
+                    }
+                finally:
+                    lock.release()
 
-                self._send(HTTPStatus.NOT_FOUND, {"error": "control endpoint not found"})
-            finally:
-                lock.release()
+            self._run_idempotent(
+                idempotency_key, fingerprint, "POST", path, mutate_world
+            )
 
     return Handler
 
