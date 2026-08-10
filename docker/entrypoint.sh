@@ -17,6 +17,10 @@ case "${1:-inspector}" in
     fi
     exec worldos-inspector --db "$DB_PATH" --host "$HOST" --port "$PORT"
     ;;
+  mcp)
+    ensure_parent
+    exec worldos-mcp
+    ;;
   init)
     ensure_parent
     if [ -f "$DB_PATH" ]; then
