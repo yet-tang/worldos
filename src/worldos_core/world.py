@@ -88,12 +88,15 @@ _WORLD_EVENT_TYPES = {
 
 
 def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
-    if event.event_type in NON_WORLD_EVENTS:
+    # Event streams are shared by multiple projections and may contain extension or
+    # stimulus events that the world projection does not own. Such events must be
+    # projection-neutral rather than making the entire history unreplayable. This
+    # is the same structural-sharing behavior used by the knowledge/memory/social
+    # reducers for unrelated events.
+    if event.event_type in NON_WORLD_EVENTS or event.event_type not in _WORLD_EVENT_TYPES:
         if event.tick <= state.tick:
             return state
         return state.model_copy(update={"tick": event.tick})
-    if event.event_type not in _WORLD_EVENT_TYPES:
-        raise ValueError(f"no reducer registered for event type: {event.event_type}")
 
     next_tick = max(state.tick, event.tick)
     next_applied = [*state.applied_event_ids, event.event_id]
