@@ -22,7 +22,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     WORLDOS_DB=/data/world.db \
     WORLDOS_HOST=0.0.0.0 \
-    WORLDOS_PORT=8765
+    WORLDOS_PORT=8765 \
+    WORLDOS_VCS_REF=$VCS_REF \
+    WORLDOS_VERSION=$VERSION
 
 RUN groupadd --gid 10001 worldos \
     && useradd --uid 10001 --gid worldos --create-home --shell /usr/sbin/nologin worldos \

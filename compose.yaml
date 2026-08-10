@@ -20,6 +20,7 @@ services:
       WORLDOS_HOST: 0.0.0.0
       WORLDOS_PORT: 8765
       WORLDOS_AUTO_INIT: ${WORLDOS_AUTO_INIT:-false}
+      WORLDOS_DEBUG_TOKEN: ${WORLDOS_DEBUG_TOKEN:-}
     expose:
       - "8765"
     networks:
