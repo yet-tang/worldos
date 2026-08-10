@@ -29,6 +29,45 @@ def test_replay_is_stable():
     assert first.entities["alice"].components["health"]["current"] == 70
 
 
+def test_extension_event_is_projection_neutral_and_history_remains_replayable():
+    store = InMemoryEventStore()
+    store.append_batch("main", history(), expected_sequence=0)
+    before = replay_world(store.read("main"))
+    store.append_batch(
+        "main",
+        [
+            NewEvent(
+                tick=1,
+                phase="external",
+                event_type="world.external_stimulus",
+                payload={"kind": "acceptance", "message": "external observation only"},
+            )
+        ],
+        expected_sequence=3,
+    )
+
+    after = replay_world(store.read("main"))
+    assert after == before
+    assert after.canonical_hash() == before.canonical_hash()
+    assert len(store.read("main")) == 4
+
+
+def test_future_extension_event_advances_projection_tick_without_mutating_state():
+    store = InMemoryEventStore()
+    store.append_batch("main", history(), expected_sequence=0)
+    before = replay_world(store.read("main"))
+    store.append_batch(
+        "main",
+        [NewEvent(tick=5, phase="external", event_type="extension.future_signal", payload={})],
+        expected_sequence=3,
+    )
+    after = replay_world(store.read("main"))
+    assert after.tick == 5
+    assert after.entities == before.entities
+    assert after.flags == before.flags
+    assert after.canonical_hash() == before.canonical_hash()
+
+
 def test_branch_inherits_only_parent_prefix():
     store = InMemoryEventStore()
     store.append_batch("main", history(), expected_sequence=0)
