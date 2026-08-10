@@ -189,7 +189,7 @@ class WorldReadService:
             "read_only": True,
             "runtime": runtime_meta(),
             "world_count": len(self.catalog.list_worlds()),
-            "capabilities": ["worlds", "probe", "events", "actor", "social", "narrative", "diagnostics"],
+            "capabilities": ["worlds", "probe", "overview", "events", "actor", "social", "narrative", "diagnostics", "explain-event"],
         }
 
     def list_worlds(self) -> dict[str, Any]:
@@ -300,7 +300,13 @@ class WorldReadService:
         descriptor = self.catalog.get(world_id)
         with SQLiteEventStore(descriptor.database_path) as store:
             narrator = NarratorReadAPI(WorldInspector(store))
-            return _jsonable(narrator.context(timeline, from_sequence=from_sequence, actor_id=actor_id))
+            return _jsonable(
+                narrator.context(
+                    timeline,
+                    from_sequence=from_sequence,
+                    perspective_actor_id=actor_id,
+                )
+            )
 
     def get_diagnostics(self, world_id: str, *, timeline: str = "main") -> dict[str, Any]:
         descriptor = self.catalog.get(world_id)
@@ -311,3 +317,11 @@ class WorldReadService:
         descriptor = self.catalog.get(world_id)
         with SQLiteEventStore(descriptor.database_path) as store:
             return WebInspectorService(store).overview(timeline)
+
+    def explain_event(self, world_id: str, event_id: str, *, timeline: str = "main") -> dict[str, Any]:
+        descriptor = self.catalog.get(world_id)
+        with SQLiteEventStore(descriptor.database_path) as store:
+            explained = WorldInspector(store).explain_event(event_id, timeline)
+            if explained is None:
+                raise KeyError(f"unknown event: {event_id}")
+            return _jsonable(explained)
