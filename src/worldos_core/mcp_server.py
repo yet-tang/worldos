@@ -91,9 +91,11 @@ def build_mcp() -> FastMCP:
     def apply_semantic_stimulus(world_id: str, stimulus: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main", experiment_id: str | None = None) -> dict[str, Any]:
         """Apply a typed external intervention: resource shock, environment event, information, social incident, or policy change."""
         probe = _service().probe_world(world_id, timeline=timeline_id, limit=1)
-        current_hash = probe["world"]["world_hash"]
-        if current_hash != expected_world_hash: raise ValueError(f"world hash conflict: expected {expected_world_hash}, current {current_hash}")
-        tick = int(probe["world"]["current_tick"])
+        snapshot = probe["snapshot"]
+        current_hash = snapshot["world_hash"]
+        if current_hash != expected_world_hash:
+            raise ValueError(f"world hash conflict: expected {expected_world_hash}, current {current_hash}")
+        tick = int(snapshot["current_tick"])
         event = semantic_event(tick=tick, stimulus=SemanticStimulus.model_validate(stimulus), experiment_id=experiment_id)
         return _control_request("POST", f"/worlds/{world_id}/inject-event", payload={"event": event, "timeline_id": timeline_id, "expected_world_hash": expected_world_hash, "idempotency_key": idempotency_key, "reason": reason}, idempotency_key=idempotency_key)
     @mcp.tool()
