@@ -57,7 +57,7 @@ class SurvivalEconomyModule(BaseWorldModule):
                 modifier = resource_modifiers.get(resource, 0.0)
                 exact_quantity = base_quantity * max(0.0, 1.0 + modifier)
                 carry = dict(components.get("production_carry", {}))
-                accumulated = float(carry.get(resource, 0.0)) + exact_quantity
+                accumulated = round(float(carry.get(resource, 0.0)) + exact_quantity, 9)
                 quantity = max(0, int(accumulated))
                 carry[resource] = round(accumulated - quantity, 9)
                 components["production_carry"] = carry
@@ -149,7 +149,9 @@ class SurvivalEconomyModule(BaseWorldModule):
             shortage = max(0, target - food)
             pressure = self._clamp(shortage * 20 + hunger // 2 + rumor_pressure * 10, 0, 100)
             previous = components.get("food_security", {})
-            current = {"food": food, "target_reserve": target, "shortage": shortage, "pressure": pressure, "rumor_pressure": rumor_pressure}
+            previous_ticks = int(previous.get("scarcity_ticks", 0)) if isinstance(previous, dict) else 0
+            scarcity_ticks = previous_ticks + 1 if pressure >= 55 else 0
+            current = {"food": food, "target_reserve": target, "shortage": shortage, "pressure": pressure, "rumor_pressure": rumor_pressure, "scarcity_ticks": scarcity_ticks}
             components["food_security"] = current
             if previous != current:
                 audit.append(self._audit(context.tick, "scarcity.perceived", actor_id, current))
@@ -226,9 +228,10 @@ class SurvivalEconomyModule(BaseWorldModule):
             aggressor = staged[aggressor_id]
             security = aggressor.get("food_security", {})
             pressure = int(security.get("pressure", 0)) if isinstance(security, dict) else 0
-            if pressure < 75 or isinstance(aggressor.get("conflict"), dict):
+            scarcity_ticks = int(security.get("scarcity_ticks", 0)) if isinstance(security, dict) else 0
+            if pressure < 75 or scarcity_ticks < 3 or isinstance(aggressor.get("conflict"), dict):
                 continue
-            candidates: list[tuple[int, str]] = []
+            candidates: list[tuple[int, int, str]] = []
             for target_id in sorted(staged):
                 if target_id == aggressor_id or not self._same_location(aggressor, staged[target_id]):
                     continue
@@ -239,13 +242,13 @@ class SurvivalEconomyModule(BaseWorldModule):
                     candidates.append((-food, relationship, target_id))
             if not candidates:
                 continue
-            _, relationship, target_id = sorted(candidates)[0]
+            target_food_neg, relationship, target_id = sorted(candidates)[0]
             threshold = 80 + max(0, relationship)
             if pressure < threshold:
                 continue
             severity = self._clamp(20 + pressure - threshold, 10, 60)
             aggressor["conflict"] = {"target_id": target_id, "severity": severity, "reason": "food_scarcity"}
-            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {"decision": "resource_conflict", "because": {"pressure": pressure, "relationship": relationship, "target_food": -candidates[0][0]}, "target_id": target_id, "severity": severity}))
+            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {"decision": "resource_conflict", "because": {"pressure": pressure, "scarcity_ticks": scarcity_ticks, "relationship": relationship, "target_food": -target_food_neg}, "target_id": target_id, "severity": severity}))
 
     def _process_trades(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for seller_id in sorted(staged):
