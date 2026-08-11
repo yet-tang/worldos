@@ -18,12 +18,26 @@ PLANNING_EVENTS = {
 }
 MEMORY_EVENTS = {"memory.recorded", "memory.forgotten"}
 KNOWLEDGE_EVENTS = {"observation.created", "belief.updated"}
+WORLD_OWNED_EVENTS = {
+    "world.created",
+    "entity.created",
+    "entity.component_set",
+    "entity.component_removed",
+    "entity.moved",
+    "health.changed",
+    "entity.deactivated",
+    "world.flag_set",
+}
 
 
 def apply_world_in_place(state: WorldProjection, event: Event) -> None:
-    """Apply one event to a private cached world projection without copying it."""
+    """Apply one event to a private cached world projection without copying it.
+
+    Event streams are shared by multiple projections. Extension/audit events must
+    therefore be projection-neutral here just as they are in ``reduce_event``.
+    """
     state.tick = max(state.tick, event.tick)
-    if event.event_type in NON_WORLD_EVENTS:
+    if event.event_type in NON_WORLD_EVENTS or event.event_type not in WORLD_OWNED_EVENTS:
         return
     if event.event_type == "world.created":
         state.flags.update(deepcopy(event.payload.get("flags", {})))
@@ -57,10 +71,6 @@ def apply_world_in_place(state: WorldProjection, event: Event) -> None:
         _entity(state, _single_subject(event)).active = False
     elif event.event_type == "world.flag_set":
         state.flags[event.payload["name"]] = deepcopy(event.payload["value"])
-    else:
-        raise ValueError(f"no reducer registered for event type: {event.event_type}")
-    # Track only events that actually participate in this projection. Keeping every
-    # timeline event ID here made replay itself quadratic without adding world state.
     state.applied_event_ids.append(event.event_id)
 
 
@@ -121,10 +131,7 @@ def apply_knowledge_in_place(state: KnowledgeProjection, event: Event) -> None:
 
 
 def apply_social_in_place(state: SocialProjection, event: Event) -> None:
-    """Apply sparse social events while keeping the scheduler cache mutable."""
     next_state = reduce_social(state, event)
-    if next_state is state:
-        return
     state.bonds_by_actor = next_state.bonds_by_actor
     state.obligations = next_state.obligations
     state.applied_event_ids = next_state.applied_event_ids
@@ -132,7 +139,7 @@ def apply_social_in_place(state: SocialProjection, event: Event) -> None:
 
 def _single_subject(event: Event) -> str:
     if len(event.subject_ids) != 1:
-        raise ValueError(f"{event.event_type} requires exactly one subject")
+        raise ValueError(f"event requires exactly one subject: {event.event_type}")
     return event.subject_ids[0]
 
 
