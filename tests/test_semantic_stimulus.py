@@ -25,10 +25,23 @@ def test_semantic_stimulus_rejects_incomplete_contracts() -> None:
         SemanticStimulus(kind="policy_change")
 
 
-def test_compare_probes_reports_actor_and_event_deltas() -> None:
-    control = {"world": {"timeline_id": "main", "current_tick": 10, "event_count": 100, "world_hash": "a"}, "actors": [{"actor_id": "a1", "health": {"value": 1}}]}
-    experiment = {"world": {"timeline_id": "food-crisis", "current_tick": 20, "event_count": 160, "world_hash": "b"}, "actors": [{"actor_id": "a1", "health": {"value": 0.8}}]}
+def test_compare_probes_reports_actor_event_and_metric_deltas() -> None:
+    control = {
+        "snapshot": {"timeline_id": "main", "current_tick": 10, "event_count": 100, "world_hash": "a"},
+        "actors": [{"actor_id": "a1", "health": {"current": 100}, "needs": {"hunger": 20, "fatigue": 10}, "wallet": 5, "inventory": {"food": 10}}],
+        "recent_events": [{"event_type": "resource.produced"}],
+    }
+    experiment = {
+        "snapshot": {"timeline_id": "food-crisis", "current_tick": 20, "event_count": 160, "world_hash": "b"},
+        "actors": [{"actor_id": "a1", "health": {"current": 90}, "needs": {"hunger": 35, "fatigue": 12}, "wallet": 4, "inventory": {"food": 4}}],
+        "recent_events": [{"event_type": "conflict.resolved"}],
+    }
     result = compare_probes(control, experiment)
+    assert result["control"]["timeline"] == "main"
+    assert result["experiment"]["timeline"] == "food-crisis"
     assert result["delta"]["tick"] == 10
     assert result["delta"]["events"] == 60
     assert result["delta"]["actor_change_count"] == 1
+    assert result["delta"]["metrics"]["average_hunger"] == 15.0
+    assert result["delta"]["metrics"]["average_health"] == -10.0
+    assert result["delta"]["metrics"]["inventory_totals"]["food"] == -6.0
