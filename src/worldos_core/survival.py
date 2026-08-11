@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .events import NewEvent
+from .events import Event, NewEvent
 from .modules import BaseWorldModule, ModuleContext
 
 
@@ -24,6 +24,7 @@ class SurvivalEconomyModule(BaseWorldModule):
         staged = {entity_id: deepcopy(entity.components) for entity_id, entity in actors.items()}
         audit: list[NewEvent] = []
         health_events: list[NewEvent] = []
+        resource_modifiers = self._active_resource_shocks(context)
 
         for actor_id in sorted(staged):
             components = staged[actor_id]
@@ -43,29 +44,19 @@ class SurvivalEconomyModule(BaseWorldModule):
                 health_events.append(NewEvent(tick=context.tick, phase="module", event_type="health.changed", actor_id=actor_id, subject_ids=(actor_id,), payload={"delta": -1, "reason": "exhaustion"}))
 
             work_policy = components.get("work_policy", {})
-            hunger_limit = self._clamp(
-                work_policy.get("max_hunger", self.default_hunger_work_limit)
-                if isinstance(work_policy, dict)
-                else self.default_hunger_work_limit,
-                1,
-                100,
-            )
-            fatigue_limit = self._clamp(
-                work_policy.get("max_fatigue", self.default_fatigue_work_limit)
-                if isinstance(work_policy, dict)
-                else self.default_fatigue_work_limit,
-                1,
-                100,
-            )
+            hunger_limit = self._clamp(work_policy.get("max_hunger", self.default_hunger_work_limit) if isinstance(work_policy, dict) else self.default_hunger_work_limit, 1, 100)
+            fatigue_limit = self._clamp(work_policy.get("max_fatigue", self.default_fatigue_work_limit) if isinstance(work_policy, dict) else self.default_fatigue_work_limit, 1, 100)
             can_work = hunger < hunger_limit and fatigue < fatigue_limit
             job = components.get("job")
             if can_work and isinstance(job, dict) and job.get("resource") and int(job.get("rate", 0)) > 0:
                 resource = str(job["resource"])
-                quantity = int(job["rate"])
+                base_quantity = int(job["rate"])
+                modifier = resource_modifiers.get(resource, 0.0)
+                quantity = max(0, int(base_quantity * max(0.0, 1.0 + modifier)))
                 inventory = dict(components.get("inventory", {}))
                 inventory[resource] = int(inventory.get(resource, 0)) + quantity
                 components["inventory"] = inventory
-                audit.append(self._audit(context.tick, "resource.produced", actor_id, {"resource": resource, "quantity": quantity}))
+                audit.append(self._audit(context.tick, "resource.produced", actor_id, {"resource": resource, "quantity": quantity, "base_quantity": base_quantity, "stimulus_modifier": modifier}))
 
         self._process_trades(context, staged, audit)
         self._spread_rumors(context, staged, audit)
@@ -83,10 +74,9 @@ class SurvivalEconomyModule(BaseWorldModule):
 
         damage_by_actor: dict[str, int] = {}
         for event in health_events:
-            if len(event.subject_ids) != 1:
-                continue
-            target_id = event.subject_ids[0]
-            damage_by_actor[target_id] = damage_by_actor.get(target_id, 0) + max(0, -int(event.payload.get("delta", 0)))
+            if len(event.subject_ids) == 1:
+                target_id = event.subject_ids[0]
+                damage_by_actor[target_id] = damage_by_actor.get(target_id, 0) + max(0, -int(event.payload.get("delta", 0)))
         deactivations: list[NewEvent] = []
         for actor_id, damage in sorted(damage_by_actor.items()):
             if actor_id not in actors:
@@ -94,93 +84,73 @@ class SurvivalEconomyModule(BaseWorldModule):
             health = actors[actor_id].components.get("health", {})
             current_health = int(health.get("current", 100)) if isinstance(health, dict) else 100
             if damage > 0 and current_health - damage <= 0:
-                deactivations.append(
-                    NewEvent(
-                        tick=context.tick,
-                        phase="module",
-                        event_type="entity.deactivated",
-                        actor_id=actor_id,
-                        subject_ids=(actor_id,),
-                        payload={"reason": "health_depleted"},
-                    )
-                )
+                deactivations.append(NewEvent(tick=context.tick, phase="module", event_type="entity.deactivated", actor_id=actor_id, subject_ids=(actor_id,), payload={"reason": "health_depleted"}))
         return changes + health_events + deactivations + audit
+
+    @staticmethod
+    def _active_resource_shocks(context: ModuleContext) -> dict[str, float]:
+        """Combine typed resource shocks active for this tick, clamped to total shutdown/+100%."""
+        modifiers: dict[str, float] = {}
+        for event in context.history:
+            if event.event_type != "world.stimulus.resource_shock":
+                continue
+            payload = event.payload
+            resource = str(payload.get("resource") or "").strip()
+            if not resource:
+                continue
+            duration = max(1, int(payload.get("duration_ticks", 1)))
+            # External stimuli become causal on the next authoritative tick.
+            if not (event.tick < context.tick <= event.tick + duration):
+                continue
+            magnitude = max(-1.0, min(1.0, float(payload.get("magnitude", 0.0))))
+            modifiers[resource] = max(-1.0, min(1.0, modifiers.get(resource, 0.0) + magnitude))
+        return modifiers
 
     def _process_trades(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for seller_id in sorted(staged):
             offer = staged[seller_id].get("trade_offer")
-            if not isinstance(offer, dict):
-                continue
+            if not isinstance(offer, dict): continue
             buyer_id = str(offer.get("buyer_id", ""))
-            if buyer_id not in staged or not self._same_location(staged[seller_id], staged[buyer_id]):
-                continue
-            resource = str(offer.get("resource", ""))
-            quantity = max(0, int(offer.get("quantity", 0)))
-            price = max(0, int(offer.get("price", 0)))
-            seller_inventory = dict(staged[seller_id].get("inventory", {}))
-            buyer_inventory = dict(staged[buyer_id].get("inventory", {}))
-            seller_wallet = int(staged[seller_id].get("wallet", 0))
-            buyer_wallet = int(staged[buyer_id].get("wallet", 0))
-            if not resource or quantity <= 0 or int(seller_inventory.get(resource, 0)) < quantity or buyer_wallet < price:
-                continue
-            seller_inventory[resource] = int(seller_inventory.get(resource, 0)) - quantity
-            buyer_inventory[resource] = int(buyer_inventory.get(resource, 0)) + quantity
-            staged[seller_id]["inventory"] = seller_inventory
-            staged[buyer_id]["inventory"] = buyer_inventory
-            staged[seller_id]["wallet"] = seller_wallet + price
-            staged[buyer_id]["wallet"] = buyer_wallet - price
-            staged[seller_id].pop("trade_offer", None)
-            self._change_relationship(staged[seller_id], buyer_id, 2)
-            self._change_relationship(staged[buyer_id], seller_id, 2)
+            if buyer_id not in staged or not self._same_location(staged[seller_id], staged[buyer_id]): continue
+            resource = str(offer.get("resource", "")); quantity = max(0, int(offer.get("quantity", 0))); price = max(0, int(offer.get("price", 0)))
+            seller_inventory = dict(staged[seller_id].get("inventory", {})); buyer_inventory = dict(staged[buyer_id].get("inventory", {}))
+            seller_wallet = int(staged[seller_id].get("wallet", 0)); buyer_wallet = int(staged[buyer_id].get("wallet", 0))
+            if not resource or quantity <= 0 or int(seller_inventory.get(resource, 0)) < quantity or buyer_wallet < price: continue
+            seller_inventory[resource] = int(seller_inventory.get(resource, 0)) - quantity; buyer_inventory[resource] = int(buyer_inventory.get(resource, 0)) + quantity
+            staged[seller_id]["inventory"] = seller_inventory; staged[buyer_id]["inventory"] = buyer_inventory
+            staged[seller_id]["wallet"] = seller_wallet + price; staged[buyer_id]["wallet"] = buyer_wallet - price; staged[seller_id].pop("trade_offer", None)
+            self._change_relationship(staged[seller_id], buyer_id, 2); self._change_relationship(staged[buyer_id], seller_id, 2)
             audit.append(NewEvent(tick=context.tick, phase="module", event_type="trade.completed", actor_id=buyer_id, subject_ids=(seller_id, buyer_id), payload={"seller_id": seller_id, "buyer_id": buyer_id, "resource": resource, "quantity": quantity, "price": price}))
 
     def _spread_rumors(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         actor_ids = sorted(staged)
         for source_id in actor_ids:
             source_rumors = sorted({str(item) for item in staged[source_id].get("rumors", [])})
-            if not source_rumors:
-                continue
+            if not source_rumors: continue
             for target_id in actor_ids:
-                if target_id == source_id or not self._same_location(staged[source_id], staged[target_id]):
-                    continue
-                target_rumors = {str(item) for item in staged[target_id].get("rumors", [])}
-                missing = [rumor for rumor in source_rumors if rumor not in target_rumors]
-                if not missing:
-                    continue
-                rumor = missing[0]
-                staged[target_id]["rumors"] = sorted(target_rumors | {rumor})
+                if target_id == source_id or not self._same_location(staged[source_id], staged[target_id]): continue
+                target_rumors = {str(item) for item in staged[target_id].get("rumors", [])}; missing = [rumor for rumor in source_rumors if rumor not in target_rumors]
+                if not missing: continue
+                rumor = missing[0]; staged[target_id]["rumors"] = sorted(target_rumors | {rumor})
                 audit.append(NewEvent(tick=context.tick, phase="module", event_type="rumor.spread", actor_id=source_id, subject_ids=(source_id, target_id), payload={"source_id": source_id, "target_id": target_id, "rumor": rumor}))
 
     def _resolve_conflicts(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent], health_events: list[NewEvent]) -> None:
         for aggressor_id in sorted(staged):
             conflict = staged[aggressor_id].get("conflict")
-            if not isinstance(conflict, dict):
-                continue
-            target_id = str(conflict.get("target_id", ""))
-            severity = self._clamp(conflict.get("severity", 1), 1, 100)
-            if target_id not in staged or target_id == aggressor_id or not self._same_location(staged[aggressor_id], staged[target_id]):
-                continue
+            if not isinstance(conflict, dict): continue
+            target_id = str(conflict.get("target_id", "")); severity = self._clamp(conflict.get("severity", 1), 1, 100)
+            if target_id not in staged or target_id == aggressor_id or not self._same_location(staged[aggressor_id], staged[target_id]): continue
             damage = max(1, severity // 20)
             health_events.append(NewEvent(tick=context.tick, phase="module", event_type="health.changed", actor_id=aggressor_id, subject_ids=(target_id,), payload={"delta": -damage, "reason": "conflict", "aggressor_id": aggressor_id}))
-            self._change_relationship(staged[aggressor_id], target_id, -severity)
-            self._change_relationship(staged[target_id], aggressor_id, -severity)
-            staged[aggressor_id].pop("conflict", None)
+            self._change_relationship(staged[aggressor_id], target_id, -severity); self._change_relationship(staged[target_id], aggressor_id, -severity); staged[aggressor_id].pop("conflict", None)
             audit.append(NewEvent(tick=context.tick, phase="module", event_type="conflict.resolved", actor_id=aggressor_id, subject_ids=(aggressor_id, target_id), payload={"aggressor_id": aggressor_id, "target_id": target_id, "severity": severity, "damage": damage}))
 
     @staticmethod
-    def _same_location(left: dict[str, Any], right: dict[str, Any]) -> bool:
-        return left.get("position", {}).get("location_id") == right.get("position", {}).get("location_id")
-
+    def _same_location(left: dict[str, Any], right: dict[str, Any]) -> bool: return left.get("position", {}).get("location_id") == right.get("position", {}).get("location_id")
     @staticmethod
     def _change_relationship(components: dict[str, Any], other_id: str, delta: int) -> None:
-        relationships = dict(components.get("relationships", {}))
-        relationships[other_id] = SurvivalEconomyModule._clamp(relationships.get(other_id, 0) + delta, -100, 100)
-        components["relationships"] = relationships
-
+        relationships = dict(components.get("relationships", {})); relationships[other_id] = SurvivalEconomyModule._clamp(relationships.get(other_id, 0) + delta, -100, 100); components["relationships"] = relationships
     @staticmethod
-    def _clamp(value: Any, minimum: int, maximum: int) -> int:
-        return max(minimum, min(maximum, int(value)))
-
+    def _clamp(value: Any, minimum: int, maximum: int) -> int: return max(minimum, min(maximum, int(value)))
     @staticmethod
-    def _audit(tick: int, event_type: str, actor_id: str, payload: dict[str, Any]) -> NewEvent:
-        return NewEvent(tick=tick, phase="module", event_type=event_type, actor_id=actor_id, subject_ids=(actor_id,), payload=payload)
+    def _audit(tick: int, event_type: str, actor_id: str, payload: dict[str, Any]) -> NewEvent: return NewEvent(tick=tick, phase="module", event_type=event_type, actor_id=actor_id, subject_ids=(actor_id,), payload=payload)
