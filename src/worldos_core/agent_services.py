@@ -8,6 +8,7 @@ from typing import Any
 from .inspector import WorldInspector
 from .narrator import NarratorReadAPI
 from .sqlite_store import SQLiteEventStore
+from .timeline_lineage import timeline_lineage
 from .web_inspector import WebInspectorService, _jsonable
 from .world_creator import WorldCatalog, WorldDescriptor
 
@@ -189,7 +190,7 @@ class WorldReadService:
             "read_only": True,
             "runtime": runtime_meta(),
             "world_count": len(self.catalog.list_worlds()),
-            "capabilities": ["worlds", "probe", "overview", "events", "actor", "social", "narrative", "diagnostics", "explain-event"],
+            "capabilities": ["worlds", "probe", "overview", "events", "actor", "social", "narrative", "diagnostics", "explain-event", "timeline-lineage"],
         }
 
     def list_worlds(self) -> dict[str, Any]:
@@ -252,6 +253,11 @@ class WorldReadService:
                 "diagnostics": diagnostics(bundle),
                 "recent_events": [_jsonable(event) for event in bundle.events[-limit:]],
             }
+
+    def get_timeline_lineage(self, world_id: str, *, timeline: str = "main") -> dict[str, Any]:
+        descriptor = self.catalog.get(world_id)
+        with SQLiteEventStore(descriptor.database_path) as store:
+            return timeline_lineage(store, timeline)
 
     def inspect_actor(self, world_id: str, actor_id: str, *, timeline: str = "main") -> dict[str, Any]:
         descriptor = self.catalog.get(world_id)

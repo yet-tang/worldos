@@ -23,15 +23,19 @@ EXPERIENCE_EVENT_TYPES = {
 
 
 class AdaptiveMemoryModule(BaseWorldModule):
-    """Turns salient lived events into durable episodic memory and adaptive strategy.
+    """Turns lived events into durable memory whose influence changes over time.
 
-    The module never invents an outcome. It records what happened, summarizes repeated
-    experience deterministically, and exposes strategy/social-structure components for
-    domain modules to consume on subsequent ticks.
+    Memories remain immutable audit records. Strategy derives a deterministic effective
+    strength from their age and repetition: isolated old experiences fade toward a
+    non-zero floor, while repeated experience reinforces a pattern. This creates long-
+    term adaptation without deleting history or introducing wall-clock dependence.
     """
 
     name = "adaptive_memory"
     order = 10
+    decay_horizon_ticks = 200
+    minimum_memory_strength = 0.2
+    max_reinforcement = 0.5
 
     def before_actions(self, context: ModuleContext) -> list[NewEvent]:
         if context.tick <= 0:
@@ -43,8 +47,6 @@ class AdaptiveMemoryModule(BaseWorldModule):
             if event.event_type == "memory.recorded"
         }
 
-        # Record only the immediately preceding tick. Completed timelines therefore do
-        # not repeatedly rescan/re-emit their entire history after restart.
         for source in context.history:
             if source.tick != context.tick - 1 or source.event_type not in EXPERIENCE_EVENT_TYPES:
                 continue
@@ -88,7 +90,7 @@ class AdaptiveMemoryModule(BaseWorldModule):
         }
         memories = self._experience_memories(context.history)
         for actor_id, entity in actors.items():
-            strategy = self._strategy(actor_id, memories.get(actor_id, []))
+            strategy = self._strategy(actor_id, memories.get(actor_id, []), current_tick=context.tick)
             if entity.components.get("adaptive_strategy") != strategy:
                 events.append(
                     NewEvent(
@@ -165,8 +167,25 @@ class AdaptiveMemoryModule(BaseWorldModule):
                 continue
             owner_id = str(event.payload.get("owner_id") or "")
             if owner_id:
-                result[owner_id].append(content)
+                result[owner_id].append(
+                    {
+                        "content": content,
+                        "recorded_tick": int(event.payload.get("tick", event.tick)),
+                        "salience": float(event.payload.get("salience", 0.7)),
+                        "confidence": float(event.payload.get("confidence", 1.0)),
+                    }
+                )
         return result
+
+    @classmethod
+    def _memory_strength(cls, memory: dict[str, Any], *, current_tick: int, repetition_count: int) -> float:
+        age = max(0, current_tick - int(memory.get("recorded_tick", current_tick)))
+        decay = max(cls.minimum_memory_strength, 1.0 - age / cls.decay_horizon_ticks)
+        reinforcement = 1.0 + min(cls.max_reinforcement, max(0, repetition_count - 1) * 0.05)
+        salience = max(0.1, min(1.0, float(memory.get("salience", 0.7))))
+        confidence = max(0.0, min(1.0, float(memory.get("confidence", 1.0))))
+        salience_factor = 0.75 + 0.25 * salience
+        return round(decay * reinforcement * salience_factor * confidence, 4)
 
     @staticmethod
     def _counterpart(owner_id: str, experience: dict[str, Any]) -> str | None:
@@ -183,47 +202,57 @@ class AdaptiveMemoryModule(BaseWorldModule):
         return None
 
     @classmethod
-    def _strategy(cls, actor_id: str, memories: list[dict[str, Any]]) -> dict[str, Any]:
-        counts: dict[str, int] = defaultdict(int)
-        partner_score: dict[str, int] = defaultdict(int)
+    def _strategy(cls, actor_id: str, memories: list[dict[str, Any]], *, current_tick: int = 0) -> dict[str, Any]:
+        raw_counts: dict[str, int] = defaultdict(int)
         for memory in memories:
-            event_type = str(memory.get("experience_type"))
-            counts[event_type] += 1
-            other = cls._counterpart(actor_id, memory)
+            content = memory.get("content", memory)
+            raw_counts[str(content.get("experience_type"))] += 1
+
+        weighted: dict[str, float] = defaultdict(float)
+        partner_score: dict[str, float] = defaultdict(float)
+        for memory in memories:
+            content = memory.get("content", memory)
+            event_type = str(content.get("experience_type"))
+            strength = cls._memory_strength(memory, current_tick=current_tick, repetition_count=raw_counts[event_type])
+            weighted[event_type] += strength
+            other = cls._counterpart(actor_id, content)
             if other:
                 if event_type in {"trade.completed", "social.helped", "obligation.fulfilled"}:
-                    partner_score[other] += 2
+                    partner_score[other] += 2 * strength
                 elif event_type == "scarcity.purchase":
-                    partner_score[other] += 1
+                    partner_score[other] += strength
                 elif event_type in {"conflict.resolved", "obligation.defaulted"}:
-                    partner_score[other] -= 3
+                    partner_score[other] -= 3 * strength
 
-        scarcity = counts["scarcity.perceived"]
-        hoarding = counts["scarcity.purchase"]
-        conflicts = counts["conflict.resolved"]
-        rejected = counts["rumor.rejected"]
-        accepted = counts["rumor.spread"]
-        defaults = counts["obligation.defaulted"]
-        fulfilled = counts["obligation.fulfilled"]
+        scarcity = weighted["scarcity.perceived"]
+        hoarding = weighted["scarcity.purchase"]
+        conflicts = weighted["conflict.resolved"]
+        rejected = weighted["rumor.rejected"]
+        accepted = weighted["rumor.spread"]
+        defaults = weighted["obligation.defaulted"]
+        fulfilled = weighted["obligation.fulfilled"]
 
-        preferred = [actor for actor, score in sorted(partner_score.items(), key=lambda item: (-item[1], item[0])) if score >= 2][:4]
-        avoided = [actor for actor, score in sorted(partner_score.items(), key=lambda item: (item[1], item[0])) if score <= -2][:4]
+        preferred = [actor for actor, score in sorted(partner_score.items(), key=lambda item: (-item[1], item[0])) if score >= 1.5][:4]
+        avoided = [actor for actor, score in sorted(partner_score.items(), key=lambda item: (item[1], item[0])) if score <= -1.5][:4]
         return {
-            "reserve_bonus": min(6, scarcity // 5 + hoarding // 3),
-            "rumor_skepticism": min(30, rejected * 2 + conflicts // 2),
-            "conflict_caution": min(25, conflicts * 2),
-            "reciprocity_bias": max(-20, min(20, fulfilled * 3 - defaults * 5)),
+            "reserve_bonus": min(6, int(scarcity // 5 + hoarding // 3)),
+            "rumor_skepticism": min(30, int(rejected * 2 + conflicts / 2)),
+            "conflict_caution": min(25, int(conflicts * 2)),
+            "reciprocity_bias": max(-20, min(20, int(round(fulfilled * 3 - defaults * 5)))),
             "preferred_partners": preferred,
             "avoided_partners": avoided,
             "experience_count": len(memories),
             "evidence": {
-                "scarcity_exposure": scarcity,
-                "hoarding_experience": hoarding,
-                "conflict_exposure": conflicts,
-                "rumor_accepted": accepted,
-                "rumor_rejected": rejected,
-                "obligations_fulfilled": fulfilled,
-                "obligations_defaulted": defaults,
+                "scarcity_exposure": raw_counts["scarcity.perceived"],
+                "hoarding_experience": raw_counts["scarcity.purchase"],
+                "conflict_exposure": raw_counts["conflict.resolved"],
+                "rumor_accepted": raw_counts["rumor.spread"],
+                "rumor_rejected": raw_counts["rumor.rejected"],
+                "obligations_fulfilled": raw_counts["obligation.fulfilled"],
+                "obligations_defaulted": raw_counts["obligation.defaulted"],
+                "effective_scarcity_exposure": round(scarcity, 3),
+                "effective_conflict_exposure": round(conflicts, 3),
+                "memory_decay_horizon": cls.decay_horizon_ticks,
             },
         }
 

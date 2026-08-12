@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 from typing import Any
 
+from .conflict_propensity import conflict_propensity
 from .events import NewEvent
 from .modules import BaseWorldModule, ModuleContext
 
@@ -34,8 +35,16 @@ class SurvivalEconomyModule(BaseWorldModule):
             survival = dict(components.get("survival", {}))
             needs = dict(components.get("needs", {}))
             metabolism = dict(components.get("metabolism", {}))
-            hunger = self._clamp(needs.get("hunger", survival.get("hunger", 0)) + metabolism.get("hunger_per_tick", 1), 0, 100)
-            fatigue = self._clamp(needs.get("fatigue", survival.get("fatigue", 0)) + metabolism.get("fatigue_per_tick", 1), 0, 100)
+            hunger = self._clamp(
+                needs.get("hunger", survival.get("hunger", 0)) + metabolism.get("hunger_per_tick", 1),
+                0,
+                100,
+            )
+            fatigue = self._clamp(
+                needs.get("fatigue", survival.get("fatigue", 0)) + metabolism.get("fatigue_per_tick", 1),
+                0,
+                100,
+            )
             needs.update({"hunger": hunger, "fatigue": fatigue})
             survival.update({"hunger": hunger, "fatigue": fatigue})
             components["needs"] = needs
@@ -236,29 +245,67 @@ class SurvivalEconomyModule(BaseWorldModule):
             security = aggressor.get("food_security", {})
             pressure = int(security.get("pressure", 0)) if isinstance(security, dict) else 0
             scarcity_ticks = int(security.get("scarcity_ticks", 0)) if isinstance(security, dict) else 0
-            if pressure < 75 or scarcity_ticks < 3 or isinstance(aggressor.get("conflict"), dict):
+            if pressure < 55 or scarcity_ticks < 2 or isinstance(aggressor.get("conflict"), dict):
                 continue
+
             strategy = aggressor.get("adaptive_strategy", {})
             caution = int(strategy.get("conflict_caution", 0)) if isinstance(strategy, dict) else 0
             avoided = set(strategy.get("avoided_partners", [])) if isinstance(strategy, dict) else set()
+            own_inventory = aggressor.get("inventory", {})
+            own_food = int(own_inventory.get("food", 0)) if isinstance(own_inventory, dict) else 0
+            needs = aggressor.get("needs", {})
+            hunger = int(needs.get("hunger", 0)) if isinstance(needs, dict) else 0
+            shortage = int(security.get("shortage", 0)) if isinstance(security, dict) else 0
+            rumor_pressure = int(security.get("rumor_pressure", 0)) if isinstance(security, dict) else 0
+
             candidates: list[tuple[int, int, int, str]] = []
+            alternative_sellers = 0
             for target_id in sorted(staged):
                 if target_id == aggressor_id or not self._same_location(aggressor, staged[target_id]):
                     continue
-                inventory = staged[target_id].get("inventory", {})
-                food = int(inventory.get("food", 0)) if isinstance(inventory, dict) else 0
+                target_inventory = staged[target_id].get("inventory", {})
+                target_food = int(target_inventory.get("food", 0)) if isinstance(target_inventory, dict) else 0
+                target_security = staged[target_id].get("food_security", {})
+                target_reserve = int(target_security.get("target_reserve", 2)) if isinstance(target_security, dict) else 2
                 relationship = int(aggressor.get("relationships", {}).get(target_id, 0)) if isinstance(aggressor.get("relationships", {}), dict) else 0
-                if food >= 3:
-                    candidates.append((0 if target_id in avoided else 1, -food, relationship, target_id))
+                if target_food > target_reserve and target_id not in avoided:
+                    alternative_sellers += 1
+                if target_food >= 3:
+                    candidates.append((0 if target_id in avoided else 1, -target_food, relationship, target_id))
             if not candidates:
                 continue
+
             _, target_food_neg, relationship, target_id = sorted(candidates)[0]
-            threshold = 80 + max(0, relationship) + caution
-            if pressure < threshold:
+            target_food = -target_food_neg
+            propensity = conflict_propensity(
+                pressure=pressure,
+                hunger=hunger,
+                shortage=shortage,
+                scarcity_ticks=scarcity_ticks,
+                rumor_pressure=rumor_pressure,
+                relationship=relationship,
+                own_food=own_food,
+                target_food=target_food,
+                conflict_caution=caution,
+                alternative_sellers=alternative_sellers,
+                target_avoided=target_id in avoided,
+            )
+            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {
+                "decision": "resource_conflict_propensity",
+                "because": propensity,
+                "target_id": target_id,
+            }))
+            if not propensity["triggered"]:
                 continue
-            severity = self._clamp(20 + pressure - threshold, 10, 60)
+
+            severity = self._clamp(10 + int(round(float(propensity["score"]) - float(propensity["trigger_score"]))), 10, 60)
             aggressor["conflict"] = {"target_id": target_id, "severity": severity, "reason": "food_scarcity"}
-            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {"decision": "resource_conflict", "because": {"pressure": pressure, "scarcity_ticks": scarcity_ticks, "relationship": relationship, "target_food": -target_food_neg, "adaptive_caution": caution}, "target_id": target_id, "severity": severity}))
+            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {
+                "decision": "resource_conflict",
+                "because": propensity,
+                "target_id": target_id,
+                "severity": severity,
+            }))
 
     def _process_trades(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for seller_id in sorted(staged):
@@ -268,15 +315,24 @@ class SurvivalEconomyModule(BaseWorldModule):
             buyer_id = str(offer.get("buyer_id", ""))
             if buyer_id not in staged or not self._same_location(staged[seller_id], staged[buyer_id]):
                 continue
-            resource = str(offer.get("resource", "")); quantity = max(0, int(offer.get("quantity", 0))); price = max(0, int(offer.get("price", 0)))
-            seller_inventory = dict(staged[seller_id].get("inventory", {})); buyer_inventory = dict(staged[buyer_id].get("inventory", {}))
-            seller_wallet = int(staged[seller_id].get("wallet", 0)); buyer_wallet = int(staged[buyer_id].get("wallet", 0))
+            resource = str(offer.get("resource", ""))
+            quantity = max(0, int(offer.get("quantity", 0)))
+            price = max(0, int(offer.get("price", 0)))
+            seller_inventory = dict(staged[seller_id].get("inventory", {}))
+            buyer_inventory = dict(staged[buyer_id].get("inventory", {}))
+            seller_wallet = int(staged[seller_id].get("wallet", 0))
+            buyer_wallet = int(staged[buyer_id].get("wallet", 0))
             if not resource or quantity <= 0 or int(seller_inventory.get(resource, 0)) < quantity or buyer_wallet < price:
                 continue
-            seller_inventory[resource] = int(seller_inventory.get(resource, 0)) - quantity; buyer_inventory[resource] = int(buyer_inventory.get(resource, 0)) + quantity
-            staged[seller_id]["inventory"] = seller_inventory; staged[buyer_id]["inventory"] = buyer_inventory
-            staged[seller_id]["wallet"] = seller_wallet + price; staged[buyer_id]["wallet"] = buyer_wallet - price; staged[seller_id].pop("trade_offer", None)
-            self._change_relationship(staged[seller_id], buyer_id, 2); self._change_relationship(staged[buyer_id], seller_id, 2)
+            seller_inventory[resource] = int(seller_inventory.get(resource, 0)) - quantity
+            buyer_inventory[resource] = int(buyer_inventory.get(resource, 0)) + quantity
+            staged[seller_id]["inventory"] = seller_inventory
+            staged[buyer_id]["inventory"] = buyer_inventory
+            staged[seller_id]["wallet"] = seller_wallet + price
+            staged[buyer_id]["wallet"] = buyer_wallet - price
+            staged[seller_id].pop("trade_offer", None)
+            self._change_relationship(staged[seller_id], buyer_id, 2)
+            self._change_relationship(staged[buyer_id], seller_id, 2)
             audit.append(NewEvent(tick=context.tick, phase="module", event_type="trade.completed", actor_id=buyer_id, subject_ids=(seller_id, buyer_id), payload={"seller_id": seller_id, "buyer_id": buyer_id, "resource": resource, "quantity": quantity, "price": price}))
 
     def _resolve_conflicts(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent], health_events: list[NewEvent]) -> None:
@@ -284,12 +340,15 @@ class SurvivalEconomyModule(BaseWorldModule):
             conflict = staged[aggressor_id].get("conflict")
             if not isinstance(conflict, dict):
                 continue
-            target_id = str(conflict.get("target_id", "")); severity = self._clamp(conflict.get("severity", 1), 1, 100)
+            target_id = str(conflict.get("target_id", ""))
+            severity = self._clamp(conflict.get("severity", 1), 1, 100)
             if target_id not in staged or target_id == aggressor_id or not self._same_location(staged[aggressor_id], staged[target_id]):
                 continue
             damage = max(1, severity // 20)
             health_events.append(NewEvent(tick=context.tick, phase="module", event_type="health.changed", actor_id=aggressor_id, subject_ids=(target_id,), payload={"delta": -damage, "reason": "conflict", "aggressor_id": aggressor_id}))
-            self._change_relationship(staged[aggressor_id], target_id, -severity); self._change_relationship(staged[target_id], aggressor_id, -severity); staged[aggressor_id].pop("conflict", None)
+            self._change_relationship(staged[aggressor_id], target_id, -severity)
+            self._change_relationship(staged[target_id], aggressor_id, -severity)
+            staged[aggressor_id].pop("conflict", None)
             audit.append(NewEvent(tick=context.tick, phase="module", event_type="conflict.resolved", actor_id=aggressor_id, subject_ids=(aggressor_id, target_id), payload={"aggressor_id": aggressor_id, "target_id": target_id, "severity": severity, "damage": damage, "reason": conflict.get("reason", "configured_conflict")}))
 
     @staticmethod
@@ -304,7 +363,9 @@ class SurvivalEconomyModule(BaseWorldModule):
 
     @staticmethod
     def _change_relationship(components: dict[str, Any], other_id: str, delta: int) -> None:
-        relationships = dict(components.get("relationships", {})); relationships[other_id] = SurvivalEconomyModule._clamp(relationships.get(other_id, 0) + delta, -100, 100); components["relationships"] = relationships
+        relationships = dict(components.get("relationships", {}))
+        relationships[other_id] = SurvivalEconomyModule._clamp(relationships.get(other_id, 0) + delta, -100, 100)
+        components["relationships"] = relationships
 
     @staticmethod
     def _clamp(value: Any, minimum: int, maximum: int) -> int:
