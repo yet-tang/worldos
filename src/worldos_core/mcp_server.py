@@ -67,6 +67,8 @@ def build_mcp() -> FastMCP:
     @mcp.tool()
     def probe_world(world_id: str, timeline: str = "main", limit: int = 50) -> dict[str, Any]: return _service().probe_world(world_id, timeline=timeline, limit=limit)
     @mcp.tool()
+    def get_timeline_lineage(world_id: str, timeline: str = "main") -> dict[str, Any]: return _service().get_timeline_lineage(world_id, timeline=timeline)
+    @mcp.tool()
     def inspect_actor(world_id: str, actor_id: str, timeline: str = "main") -> dict[str, Any]: return _service().inspect_actor(world_id, actor_id, timeline=timeline)
     @mcp.tool()
     def query_events(world_id: str, timeline: str = "main", event_type: str | None = None, actor_id: str | None = None, subject_id: str | None = None, tick: int | None = None, correlation_id: str | None = None, limit: int = 100) -> dict[str, Any]: return _service().query_events(world_id, timeline=timeline, event_type=event_type, actor_id=actor_id, subject_id=subject_id, tick=tick, correlation_id=correlation_id, limit=limit)
