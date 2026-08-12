@@ -145,13 +145,15 @@ class SurvivalEconomyModule(BaseWorldModule):
             rumors = [str(item) for item in components.get("rumors", [])]
             rumor_pressure = min(3, len(rumors))
             risk_bias = self._stable_score(context, actor_id, "scarcity-risk") % 4
-            target = 2 + hunger // 25 + rumor_pressure + risk_bias
+            strategy = components.get("adaptive_strategy", {})
+            reserve_bonus = int(strategy.get("reserve_bonus", 0)) if isinstance(strategy, dict) else 0
+            target = 2 + hunger // 25 + rumor_pressure + risk_bias + reserve_bonus
             shortage = max(0, target - food)
             pressure = self._clamp(shortage * 20 + hunger // 2 + rumor_pressure * 10, 0, 100)
             previous = components.get("food_security", {})
             previous_ticks = int(previous.get("scarcity_ticks", 0)) if isinstance(previous, dict) else 0
             scarcity_ticks = previous_ticks + 1 if pressure >= 55 else 0
-            current = {"food": food, "target_reserve": target, "shortage": shortage, "pressure": pressure, "rumor_pressure": rumor_pressure, "scarcity_ticks": scarcity_ticks}
+            current = {"food": food, "target_reserve": target, "shortage": shortage, "pressure": pressure, "rumor_pressure": rumor_pressure, "scarcity_ticks": scarcity_ticks, "adaptive_reserve_bonus": reserve_bonus}
             components["food_security"] = current
             if previous != current:
                 audit.append(self._audit(context.tick, "scarcity.perceived", actor_id, current))
@@ -169,9 +171,12 @@ class SurvivalEconomyModule(BaseWorldModule):
             shortage = int(security.get("shortage", 0)) if isinstance(security, dict) else 0
             if shortage <= 0 or int(buyer.get("wallet", 0)) <= 0:
                 continue
-            candidates: list[tuple[int, str]] = []
+            strategy = buyer.get("adaptive_strategy", {})
+            preferred = set(strategy.get("preferred_partners", [])) if isinstance(strategy, dict) else set()
+            avoided = set(strategy.get("avoided_partners", [])) if isinstance(strategy, dict) else set()
+            candidates: list[tuple[int, int, str]] = []
             for seller_id in sorted(staged):
-                if seller_id == buyer_id or not self._same_location(buyer, staged[seller_id]):
+                if seller_id == buyer_id or seller_id in avoided or not self._same_location(buyer, staged[seller_id]):
                     continue
                 seller_inventory = staged[seller_id].get("inventory", {})
                 seller_food = int(seller_inventory.get("food", 0)) if isinstance(seller_inventory, dict) else 0
@@ -179,10 +184,10 @@ class SurvivalEconomyModule(BaseWorldModule):
                 reserve = int(seller_security.get("target_reserve", 2)) if isinstance(seller_security, dict) else 2
                 surplus = seller_food - reserve
                 if surplus > 0:
-                    candidates.append((-surplus, seller_id))
+                    candidates.append((0 if seller_id in preferred else 1, -surplus, seller_id))
             if not candidates:
                 continue
-            _, seller_id = sorted(candidates)[0]
+            _, _, seller_id = sorted(candidates)[0]
             seller = staged[seller_id]
             price = 1 + min(4, int(security.get("pressure", 0)) // 25)
             if int(buyer.get("wallet", 0)) < price:
@@ -197,8 +202,8 @@ class SurvivalEconomyModule(BaseWorldModule):
             buyer["wallet"] = int(buyer.get("wallet", 0)) - price
             self._change_relationship(seller, buyer_id, 1)
             self._change_relationship(buyer, seller_id, 1)
-            audit.append(NewEvent(tick=context.tick, phase="module", event_type="scarcity.purchase", actor_id=buyer_id, subject_ids=(buyer_id, seller_id), payload={"buyer_id": buyer_id, "seller_id": seller_id, "resource": "food", "quantity": 1, "price": price, "reason": "target_reserve", "pressure": security.get("pressure", 0)}))
-            audit.append(self._audit(context.tick, "decision.evidence", buyer_id, {"decision": "hoard_food", "because": {"shortage": shortage, "pressure": security.get("pressure", 0), "rumors": list(buyer.get("rumors", []))}, "seller_id": seller_id}))
+            audit.append(NewEvent(tick=context.tick, phase="module", event_type="scarcity.purchase", actor_id=buyer_id, subject_ids=(buyer_id, seller_id), payload={"buyer_id": buyer_id, "seller_id": seller_id, "resource": "food", "quantity": 1, "price": price, "reason": "target_reserve", "pressure": security.get("pressure", 0), "adaptive_preference": seller_id in preferred}))
+            audit.append(self._audit(context.tick, "decision.evidence", buyer_id, {"decision": "hoard_food", "because": {"shortage": shortage, "pressure": security.get("pressure", 0), "rumors": list(buyer.get("rumors", [])), "adaptive_strategy": strategy}, "seller_id": seller_id}))
 
     def _spread_rumors(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         actor_ids = sorted(staged)
@@ -215,13 +220,15 @@ class SurvivalEconomyModule(BaseWorldModule):
                 if not missing:
                     continue
                 trust = int(relationships.get(target_id, 0)) if isinstance(relationships, dict) else 0
-                required = -20 + (self._stable_score(context, target_id, "rumor-trust") % 41)
+                target_strategy = staged[target_id].get("adaptive_strategy", {})
+                skepticism = int(target_strategy.get("rumor_skepticism", 0)) if isinstance(target_strategy, dict) else 0
+                required = -20 + (self._stable_score(context, target_id, "rumor-trust") % 41) + skepticism
                 rumor = missing[0]
                 if trust < required:
-                    audit.append(NewEvent(tick=context.tick, phase="module", event_type="rumor.rejected", actor_id=source_id, subject_ids=(source_id, target_id), payload={"source_id": source_id, "target_id": target_id, "rumor": rumor, "trust": trust, "required_trust": required}))
+                    audit.append(NewEvent(tick=context.tick, phase="module", event_type="rumor.rejected", actor_id=source_id, subject_ids=(source_id, target_id), payload={"source_id": source_id, "target_id": target_id, "rumor": rumor, "trust": trust, "required_trust": required, "adaptive_skepticism": skepticism}))
                     continue
                 staged[target_id]["rumors"] = sorted(target_rumors | {rumor})
-                audit.append(NewEvent(tick=context.tick, phase="module", event_type="rumor.spread", actor_id=source_id, subject_ids=(source_id, target_id), payload={"source_id": source_id, "target_id": target_id, "rumor": rumor, "trust": trust, "required_trust": required}))
+                audit.append(NewEvent(tick=context.tick, phase="module", event_type="rumor.spread", actor_id=source_id, subject_ids=(source_id, target_id), payload={"source_id": source_id, "target_id": target_id, "rumor": rumor, "trust": trust, "required_trust": required, "adaptive_skepticism": skepticism}))
 
     def _scarcity_conflicts(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for aggressor_id in sorted(staged):
@@ -231,7 +238,10 @@ class SurvivalEconomyModule(BaseWorldModule):
             scarcity_ticks = int(security.get("scarcity_ticks", 0)) if isinstance(security, dict) else 0
             if pressure < 75 or scarcity_ticks < 3 or isinstance(aggressor.get("conflict"), dict):
                 continue
-            candidates: list[tuple[int, int, str]] = []
+            strategy = aggressor.get("adaptive_strategy", {})
+            caution = int(strategy.get("conflict_caution", 0)) if isinstance(strategy, dict) else 0
+            avoided = set(strategy.get("avoided_partners", [])) if isinstance(strategy, dict) else set()
+            candidates: list[tuple[int, int, int, str]] = []
             for target_id in sorted(staged):
                 if target_id == aggressor_id or not self._same_location(aggressor, staged[target_id]):
                     continue
@@ -239,16 +249,16 @@ class SurvivalEconomyModule(BaseWorldModule):
                 food = int(inventory.get("food", 0)) if isinstance(inventory, dict) else 0
                 relationship = int(aggressor.get("relationships", {}).get(target_id, 0)) if isinstance(aggressor.get("relationships", {}), dict) else 0
                 if food >= 3:
-                    candidates.append((-food, relationship, target_id))
+                    candidates.append((0 if target_id in avoided else 1, -food, relationship, target_id))
             if not candidates:
                 continue
-            target_food_neg, relationship, target_id = sorted(candidates)[0]
-            threshold = 80 + max(0, relationship)
+            _, target_food_neg, relationship, target_id = sorted(candidates)[0]
+            threshold = 80 + max(0, relationship) + caution
             if pressure < threshold:
                 continue
             severity = self._clamp(20 + pressure - threshold, 10, 60)
             aggressor["conflict"] = {"target_id": target_id, "severity": severity, "reason": "food_scarcity"}
-            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {"decision": "resource_conflict", "because": {"pressure": pressure, "scarcity_ticks": scarcity_ticks, "relationship": relationship, "target_food": -target_food_neg}, "target_id": target_id, "severity": severity}))
+            audit.append(self._audit(context.tick, "decision.evidence", aggressor_id, {"decision": "resource_conflict", "because": {"pressure": pressure, "scarcity_ticks": scarcity_ticks, "relationship": relationship, "target_food": -target_food_neg, "adaptive_caution": caution}, "target_id": target_id, "severity": severity}))
 
     def _process_trades(self, context: ModuleContext, staged: dict[str, dict[str, Any]], audit: list[NewEvent]) -> None:
         for seller_id in sorted(staged):

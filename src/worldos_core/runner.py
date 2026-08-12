@@ -7,6 +7,7 @@ from typing import Iterable
 
 from pydantic import BaseModel, Field
 
+from .adaptive import AdaptiveMemoryModule
 from .events import Event, NewEvent
 from .modules import WorldModule
 from .scheduler import DeterministicTickEngine, TickResult
@@ -62,7 +63,10 @@ class WorldRunner:
         self.timeline_id = timeline_id
         self.world_seed = world_seed
         self.snapshot_interval = snapshot_interval
-        configured_modules = tuple(modules) if modules is not None else (SurvivalEconomyModule(),)
+        configured_modules = tuple(modules) if modules is not None else (
+            AdaptiveMemoryModule(),
+            SurvivalEconomyModule(),
+        )
         self.engine = DeterministicTickEngine(
             self.store,
             world_seed=world_seed,
