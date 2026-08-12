@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 
+MIN_SCARCITY_TICKS = 3
+TRIGGER_SCORE = 85.0
+
+
 def conflict_propensity(
     *,
     pressure: int,
@@ -19,9 +23,10 @@ def conflict_propensity(
 ) -> dict[str, Any]:
     """Return a deterministic, auditable propensity for scarcity-driven conflict.
 
-    Positive forces increase escalation pressure; coping options and learned caution
-    reduce it. The result is deliberately not probabilistic so identical histories
-    remain replay-identical across timelines and machines.
+    Escalation requires both sustained scarcity and a high multi-factor score. This
+    preserves the social meaning of a crisis building over time while still allowing
+    learned caution, viable market alternatives, and positive relationships to keep a
+    severe but marginal situation below the escalation boundary.
     """
 
     pressure_drive = max(0.0, min(35.0, (int(pressure) - 50) * 0.7))
@@ -49,12 +54,12 @@ def conflict_propensity(
     )
     brakes = caution_brake + alternatives_brake + relationship_brake
     score = max(0.0, min(100.0, positive - brakes))
-    trigger_score = 50.0
+    sustained = int(scarcity_ticks) >= MIN_SCARCITY_TICKS
 
     return {
         "score": round(score, 3),
-        "trigger_score": trigger_score,
-        "triggered": score >= trigger_score,
+        "trigger_score": TRIGGER_SCORE,
+        "triggered": sustained and score >= TRIGGER_SCORE,
         "drivers": {
             "pressure": round(pressure_drive, 3),
             "hunger": round(hunger_drive, 3),
@@ -75,8 +80,9 @@ def conflict_propensity(
             "hunger": int(hunger),
             "shortage": int(shortage),
             "scarcity_ticks": int(scarcity_ticks),
-            "rumor_pressure": int(rumor_pressure),
+            "minimum_scarcity_ticks": MIN_SCARCITY_TICKS,
             "relationship": int(relationship),
+            "rumor_pressure": int(rumor_pressure),
             "own_food": int(own_food),
             "target_food": int(target_food),
             "conflict_caution": int(conflict_caution),
