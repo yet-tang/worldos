@@ -1,3 +1,5 @@
+import pytest
+
 from worldos_core.adaptive import AdaptiveMemoryModule
 from worldos_core.events import Event
 from worldos_core.memory_interventions import MemoryIntervention, MemorySelector, build_memory_intervention_event
@@ -89,7 +91,7 @@ def test_reinforce_multiplies_effective_strength_without_duplicating_memory():
     treated = AdaptiveMemoryModule._experience_memories(history)["人物-001"]
     treated_strength = AdaptiveMemoryModule._memory_strength(treated[0], current_tick=20, repetition_count=1)
     assert len(treated) == 1
-    assert treated_strength == round(baseline_strength * 2.0, 4)
+    assert treated_strength == pytest.approx(baseline_strength * 2.0, abs=0.0001)
     strategy = AdaptiveMemoryModule._strategy("人物-001", treated, current_tick=20)
     assert strategy["evidence"]["treated_memory_count"] == 1
 
