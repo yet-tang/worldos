@@ -106,7 +106,7 @@ def test_atomic_override_equalizes_in_one_auditable_event_without_touching_strat
     assert restored.entities["人物-001"].components["inventory"] == {"food": 9}
     assert restored.entities["人物-001"].components["wallet"] == 14
     assert restored.entities["人物-001"].components["adaptive_strategy"]["reserve_bonus"] == 0
-    assert physical_state := pre_treatment_equivalence(source, restored)
+    physical_state = pre_treatment_equivalence(source, restored)
     assert physical_state["physical_state_equal"] is True
 
 
