@@ -31,11 +31,12 @@ def world(*, food: int, wallet: int, reserve_bonus: int, seed: str = "phase-h") 
     )
 
 
-def materialize(events):
+def materialize(events, *, timeline_id: str = "experiment"):
     return [
         Event(
             sequence=index,
             event_id=f"override-{index}",
+            timeline_id=timeline_id,
             tick=event.tick,
             phase=event.phase,
             event_type=event.event_type,
@@ -78,9 +79,9 @@ def test_override_equalizes_physical_state_without_overwriting_strategy():
     treatment_events = build_physical_override_events(treatment, checkpoint, tick=13)
     control_events = build_physical_override_events(control, checkpoint, tick=13)
 
-    for event in materialize(treatment_events):
+    for event in materialize(treatment_events, timeline_id="treatment"):
         treatment = reduce_event(treatment, event)
-    for event in materialize(control_events):
+    for event in materialize(control_events, timeline_id="control"):
         control = reduce_event(control, event)
 
     result = pre_treatment_equivalence(treatment, control)
