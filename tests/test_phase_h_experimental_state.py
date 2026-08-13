@@ -1,5 +1,6 @@
 from worldos_core.experimental_state import (
     PHYSICAL_COMPONENT_ALLOWLIST,
+    build_atomic_physical_override_event,
     build_physical_override_events,
     capture_experimental_checkpoint,
     pre_treatment_equivalence,
@@ -89,6 +90,24 @@ def test_override_equalizes_physical_state_without_overwriting_strategy():
     assert result["seed_equal"] is True
     assert treatment.entities["人物-001"].components["adaptive_strategy"]["reserve_bonus"] == 6
     assert control.entities["人物-001"].components["adaptive_strategy"]["reserve_bonus"] == 0
+
+
+def test_atomic_override_equalizes_in_one_auditable_event_without_touching_strategy():
+    source = world(food=9, wallet=14, reserve_bonus=6)
+    target = world(food=1, wallet=2, reserve_bonus=0)
+    checkpoint = capture_experimental_checkpoint(source, timeline_id="checkpoint", source_sequence=99)
+    new_event = build_atomic_physical_override_event(target, checkpoint, tick=13)
+    assert new_event.event_type == "experiment.physical_state_override"
+    assert new_event.payload["checkpoint_digest"] == checkpoint.physical_state_digest
+    assert "adaptive_strategy" not in new_event.payload["component_names"]
+
+    committed = materialize([new_event], timeline_id="control")[0]
+    restored = reduce_event(target, committed)
+    assert restored.entities["人物-001"].components["inventory"] == {"food": 9}
+    assert restored.entities["人物-001"].components["wallet"] == 14
+    assert restored.entities["人物-001"].components["adaptive_strategy"]["reserve_bonus"] == 0
+    assert physical_state := pre_treatment_equivalence(source, restored)
+    assert physical_state["physical_state_equal"] is True
 
 
 def test_override_events_are_minimal_deterministic_and_auditable():
