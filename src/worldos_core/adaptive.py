@@ -5,6 +5,7 @@ import hashlib
 from typing import Any
 
 from .events import Event, NewEvent
+from .memory_interventions import treatment_for_memory
 from .modules import BaseWorldModule, ModuleContext
 
 
@@ -27,8 +28,9 @@ class AdaptiveMemoryModule(BaseWorldModule):
 
     Memories remain immutable audit records. Strategy derives a deterministic effective
     strength from their age and repetition: isolated old experiences fade toward a
-    non-zero floor, while repeated experience reinforces a pattern. This creates long-
-    term adaptation without deleting history or introducing wall-clock dependence.
+    non-zero floor, while repeated experience reinforces a pattern. Phase H memory
+    interventions are branch-local events that alter only effective contribution; the
+    original memory events remain untouched and queryable.
     """
 
     name = "adaptive_memory"
@@ -166,15 +168,35 @@ class AdaptiveMemoryModule(BaseWorldModule):
             if not isinstance(content, dict) or content.get("experience_type") not in EXPERIENCE_EVENT_TYPES:
                 continue
             owner_id = str(event.payload.get("owner_id") or "")
-            if owner_id:
-                result[owner_id].append(
-                    {
-                        "content": content,
-                        "recorded_tick": int(event.payload.get("tick", event.tick)),
-                        "salience": float(event.payload.get("salience", 0.7)),
-                        "confidence": float(event.payload.get("confidence", 1.0)),
-                    }
-                )
+            memory_id = str(event.payload.get("memory_id") or "")
+            experience_type = str(content.get("experience_type") or "")
+            if not owner_id or not memory_id:
+                continue
+            treatment = treatment_for_memory(
+                history,
+                owner_id=owner_id,
+                memory_id=memory_id,
+                experience_type=experience_type,
+            )
+            if treatment.suppressed and treatment.replacement is None:
+                continue
+            effective_content = dict(content)
+            if treatment.replacement is not None:
+                effective_content = dict(treatment.replacement)
+                effective_content.setdefault("experience_type", experience_type)
+                effective_content.setdefault("source_tick", content.get("source_tick", event.tick))
+            result[owner_id].append(
+                {
+                    "memory_id": memory_id,
+                    "content": effective_content,
+                    "recorded_tick": int(event.payload.get("tick", event.tick)),
+                    "salience": float(event.payload.get("salience", 0.7)),
+                    "confidence": float(event.payload.get("confidence", 1.0)),
+                    "treatment_multiplier": float(treatment.multiplier),
+                    "intervention_event_ids": treatment.intervention_event_ids,
+                    "replaced": treatment.replacement is not None,
+                }
+            )
         return result
 
     @classmethod
@@ -184,8 +206,9 @@ class AdaptiveMemoryModule(BaseWorldModule):
         reinforcement = 1.0 + min(cls.max_reinforcement, max(0, repetition_count - 1) * 0.05)
         salience = max(0.1, min(1.0, float(memory.get("salience", 0.7))))
         confidence = max(0.0, min(1.0, float(memory.get("confidence", 1.0))))
+        treatment_multiplier = max(0.0, float(memory.get("treatment_multiplier", 1.0)))
         salience_factor = 0.75 + 0.25 * salience
-        return round(decay * reinforcement * salience_factor * confidence, 4)
+        return round(decay * reinforcement * salience_factor * confidence * treatment_multiplier, 4)
 
     @staticmethod
     def _counterpart(owner_id: str, experience: dict[str, Any]) -> str | None:
@@ -210,11 +233,14 @@ class AdaptiveMemoryModule(BaseWorldModule):
 
         weighted: dict[str, float] = defaultdict(float)
         partner_score: dict[str, float] = defaultdict(float)
+        treated_memory_count = 0
         for memory in memories:
             content = memory.get("content", memory)
             event_type = str(content.get("experience_type"))
             strength = cls._memory_strength(memory, current_tick=current_tick, repetition_count=raw_counts[event_type])
             weighted[event_type] += strength
+            if memory.get("intervention_event_ids"):
+                treated_memory_count += 1
             other = cls._counterpart(actor_id, content)
             if other:
                 if event_type in {"trade.completed", "social.helped", "obligation.fulfilled"}:
@@ -252,6 +278,7 @@ class AdaptiveMemoryModule(BaseWorldModule):
                 "obligations_defaulted": raw_counts["obligation.defaulted"],
                 "effective_scarcity_exposure": round(scarcity, 3),
                 "effective_conflict_exposure": round(conflicts, 3),
+                "treated_memory_count": treated_memory_count,
                 "memory_decay_horizon": cls.decay_horizon_ticks,
             },
         }
