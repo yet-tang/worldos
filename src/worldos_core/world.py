@@ -84,6 +84,7 @@ _WORLD_EVENT_TYPES = {
     "health.changed",
     "entity.deactivated",
     "world.flag_set",
+    "experiment.physical_state_override",
 }
 
 
@@ -110,6 +111,33 @@ def reduce_event(state: WorldProjection, event: Event) -> WorldProjection:
         flags = dict(state.flags)
         flags[event.payload["name"]] = deepcopy(event.payload["value"])
         return state.model_copy(update={"tick": next_tick, "flags": flags, "applied_event_ids": next_applied})
+
+    if event.event_type == "experiment.physical_state_override":
+        overrides = event.payload.get("actors")
+        if not isinstance(overrides, list):
+            raise ValueError("experiment.physical_state_override requires actors list")
+        component_names = {str(item) for item in event.payload.get("component_names", [])}
+        entities = dict(state.entities)
+        for actor_payload in overrides:
+            if not isinstance(actor_payload, dict):
+                raise ValueError("physical override actor entry must be an object")
+            actor_id = str(actor_payload.get("actor_id") or "").strip()
+            if not actor_id:
+                raise ValueError("physical override actor_id is required")
+            current = _entity(state, actor_id)
+            if current.kind != "character":
+                raise ValueError(f"physical override requires character entity: {actor_id}")
+            desired = actor_payload.get("components", {})
+            if not isinstance(desired, dict):
+                raise ValueError("physical override components must be an object")
+            components = dict(current.components)
+            for component in sorted(component_names):
+                if component in desired:
+                    components[component] = deepcopy(desired[component])
+                else:
+                    components.pop(component, None)
+            entities[actor_id] = current.model_copy(update={"components": components})
+        return state.model_copy(update={"tick": next_tick, "entities": entities, "applied_event_ids": next_applied})
 
     entity_id = _single_subject(event)
     entities = dict(state.entities)
