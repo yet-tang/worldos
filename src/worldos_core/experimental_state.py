@@ -51,12 +51,6 @@ def capture_experimental_checkpoint(
     actor_ids: Iterable[str] | None = None,
     component_names: Iterable[str] = PHYSICAL_COMPONENT_ALLOWLIST,
 ) -> ExperimentalCheckpoint:
-    """Capture a deterministic physical-state manifest without mutating the world.
-
-    The checkpoint deliberately excludes memory/adaptive components. It is a causal
-    experiment input, not a hidden world snapshot or alternate persistence layer.
-    """
-
     names = tuple(sorted({str(name) for name in component_names}))
     unsupported = sorted(set(names) - PHYSICAL_COMPONENT_ALLOWLIST)
     if unsupported:
@@ -70,11 +64,7 @@ def capture_experimental_checkpoint(
             raise ValueError(f"unknown entity: {actor_id}")
         if entity.kind != "character":
             continue
-        components = {
-            name: deepcopy(entity.components[name])
-            for name in names
-            if name in entity.components
-        }
+        components = {name: deepcopy(entity.components[name]) for name in names if name in entity.components}
         actors.append(ActorPhysicalState(actor_id=actor_id, components=components))
 
     digest_payload = {
@@ -98,8 +88,6 @@ def physical_state_digest(
     actor_ids: Iterable[str] | None = None,
     component_names: Iterable[str] = PHYSICAL_COMPONENT_ALLOWLIST,
 ) -> str:
-    """Return only the selected physical-state digest for equivalence checks."""
-
     return capture_experimental_checkpoint(
         world,
         timeline_id="digest",
@@ -109,6 +97,56 @@ def physical_state_digest(
     ).physical_state_digest
 
 
+def _selected_checkpoint_actors(
+    world: WorldProjection,
+    checkpoint: ExperimentalCheckpoint,
+    actor_ids: Iterable[str] | None,
+) -> list[ActorPhysicalState]:
+    selected = set(actor_ids) if actor_ids is not None else {actor.actor_id for actor in checkpoint.actors}
+    manifest = {actor.actor_id: actor for actor in checkpoint.actors}
+    unknown = sorted(selected - set(manifest))
+    if unknown:
+        raise ValueError(f"actors not present in checkpoint: {', '.join(unknown)}")
+    actors: list[ActorPhysicalState] = []
+    for actor_id in sorted(selected):
+        entity = world.entities.get(actor_id)
+        if entity is None:
+            raise ValueError(f"unknown entity: {actor_id}")
+        if entity.kind != "character":
+            raise ValueError(f"physical override requires character entity: {actor_id}")
+        actors.append(manifest[actor_id])
+    return actors
+
+
+def build_atomic_physical_override_event(
+    world: WorldProjection,
+    checkpoint: ExperimentalCheckpoint,
+    *,
+    tick: int,
+    actor_ids: Iterable[str] | None = None,
+) -> NewEvent:
+    """Compile a checkpoint restore into one event so equalization is atomic.
+
+    The event carries only the physical allowlisted manifest. Experiential components
+    such as adaptive_strategy and memories remain untouched by the world reducer.
+    """
+    actors = _selected_checkpoint_actors(world, checkpoint, actor_ids)
+    return NewEvent(
+        tick=tick,
+        phase="experiment",
+        event_type="experiment.physical_state_override",
+        subject_ids=tuple(actor.actor_id for actor in actors),
+        payload={
+            "checkpoint_digest": checkpoint.physical_state_digest,
+            "source_timeline_id": checkpoint.source_timeline_id,
+            "source_sequence": checkpoint.source_sequence,
+            "source_world_hash": checkpoint.source_world_hash,
+            "component_names": list(checkpoint.component_names),
+            "actors": [actor.model_dump(mode="json") for actor in actors],
+        },
+    )
+
+
 def build_physical_override_events(
     world: WorldProjection,
     checkpoint: ExperimentalCheckpoint,
@@ -116,27 +154,12 @@ def build_physical_override_events(
     tick: int,
     actor_ids: Iterable[str] | None = None,
 ) -> list[NewEvent]:
-    """Compile checkpoint restoration into ordinary component events.
-
-    Only differing components emit events, making replay deterministic and audit-friendly.
-    Components present on the target but absent in the checkpoint are removed only when
-    they are in the checkpoint's declared component selection.
-    """
-
-    selected = set(actor_ids) if actor_ids is not None else {actor.actor_id for actor in checkpoint.actors}
-    manifest = {actor.actor_id: actor for actor in checkpoint.actors}
-    unknown = sorted(selected - set(manifest))
-    if unknown:
-        raise ValueError(f"actors not present in checkpoint: {', '.join(unknown)}")
-
+    selected_actors = _selected_checkpoint_actors(world, checkpoint, actor_ids)
     events: list[NewEvent] = []
-    for actor_id in sorted(selected):
-        entity = world.entities.get(actor_id)
-        if entity is None:
-            raise ValueError(f"unknown entity: {actor_id}")
-        if entity.kind != "character":
-            raise ValueError(f"physical override requires character entity: {actor_id}")
-        desired = manifest[actor_id].components
+    for actor in selected_actors:
+        actor_id = actor.actor_id
+        entity = world.entities[actor_id]
+        desired = actor.components
         for component in checkpoint.component_names:
             currently_present = component in entity.components
             desired_present = component in desired
@@ -179,8 +202,6 @@ def pre_treatment_equivalence(
     actor_ids: Iterable[str] | None = None,
     component_names: Iterable[str] = PHYSICAL_COMPONENT_ALLOWLIST,
 ) -> dict[str, Any]:
-    """Report causal precondition: selected physical state must be identical."""
-
     left = physical_state_digest(treatment, actor_ids=actor_ids, component_names=component_names)
     right = physical_state_digest(control, actor_ids=actor_ids, component_names=component_names)
     return {
