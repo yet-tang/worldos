@@ -5,7 +5,7 @@ import json
 import statistics
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CampaignTrialPlan(BaseModel):
@@ -44,6 +44,15 @@ class CampaignTrialResult(BaseModel):
                 raise ValueError(f"metric {key} must be finite")
             result[str(key)] = numeric
         return result
+
+    @model_validator(mode="after")
+    def eligible_trials_require_auditable_evidence(self) -> "CampaignTrialResult":
+        if self.attribution_eligible and self.attestation_verified:
+            if not self.attestation_digest.strip():
+                raise ValueError("causally eligible trial requires attestation_digest")
+            if not self.source_fingerprint.strip():
+                raise ValueError("causally eligible trial requires source_fingerprint")
+        return self
 
 
 class MetricReplicationSummary(BaseModel):
@@ -159,6 +168,7 @@ def trial_result_from_causal_report(
         "outcomes": outcomes,
         "behavioral_outcomes": dict(behavioral_outcomes or {}),
     }
+    source_fingerprint = _canonical_hash(fingerprint_payload)
     return CampaignTrialResult(
         trial_id=trial_id,
         seed=seed,
@@ -168,7 +178,7 @@ def trial_result_from_causal_report(
         outcomes=outcomes,
         behavioral_outcomes=dict(behavioral_outcomes or {}),
         rejection_reason=reason,
-        source_fingerprint=_canonical_hash(fingerprint_payload),
+        source_fingerprint=source_fingerprint,
     )
 
 
@@ -179,7 +189,9 @@ def _metric_summary(metric: str, values: list[float]) -> MetricReplicationSummar
     negative = sum(1 for value in values if value < 0)
     zero = len(values) - positive - negative
     counts = {"positive": positive, "negative": negative, "zero": zero}
-    dominant_sign, dominant_count = max(counts.items(), key=lambda item: (item[1], item[0]))
+    dominant_count = max(counts.values())
+    tied = sorted(sign for sign, count in counts.items() if count == dominant_count)
+    dominant_sign = tied[0] if len(tied) == 1 else "mixed"
     return MetricReplicationSummary(
         metric=metric,
         sample_count=len(values),
