@@ -136,6 +136,25 @@ def test_trial_result_from_causal_report_requires_verified_attribution():
     assert result.source_fingerprint
 
 
+def test_nested_selected_outcomes_become_stable_dotted_scalar_metrics():
+    causal = _causal_report(treatment={"x": "a"}, control={"x": "b"})
+    causal["selected_outcomes"] = {
+        "average_hunger": -1.5,
+        "inventory_totals": {"food": -42, "wood": 3},
+        "diagnostic": {"flag": True, "label": "ignored"},
+    }
+    result = trial_result_from_causal_report(
+        trial_id="trial-nested",
+        seed="seed-nested",
+        causal_report=causal,
+    )
+    assert result.outcomes == {
+        "average_hunger": -1.5,
+        "inventory_totals.food": -42.0,
+        "inventory_totals.wood": 3.0,
+    }
+
+
 def test_protocol_drifted_trial_is_rejected_even_when_its_attestation_is_verified():
     template = {
         "treatment_intervention": {"memory.scarcity": "retain"},
