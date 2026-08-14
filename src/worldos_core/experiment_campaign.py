@@ -30,6 +30,7 @@ class CampaignTrialResult(BaseModel):
     attribution_eligible: bool
     attestation_verified: bool
     protocol_match: bool = True
+    observed_protocol: dict[str, Any] = Field(default_factory=dict)
     protocol_fingerprint: str = ""
     outcomes: dict[str, float] = Field(default_factory=dict)
     behavioral_outcomes: dict[str, float] = Field(default_factory=dict)
@@ -230,6 +231,7 @@ def trial_result_from_causal_report(
         "attribution_eligible": eligible,
         "attestation_verified": verified,
         "protocol_match": protocol_match,
+        "observed_protocol": observed_protocol,
         "protocol_fingerprint": protocol_fingerprint,
         "outcomes": outcomes,
         "behavioral_outcomes": dict(behavioral_outcomes or {}),
@@ -242,6 +244,7 @@ def trial_result_from_causal_report(
         attribution_eligible=eligible,
         attestation_verified=verified,
         protocol_match=protocol_match,
+        observed_protocol=observed_protocol,
         protocol_fingerprint=protocol_fingerprint,
         outcomes=outcomes,
         behavioral_outcomes=dict(behavioral_outcomes or {}),
@@ -290,9 +293,6 @@ def summarize_campaign(
     if unknown:
         raise ValueError(f"results contain trials outside campaign plan: {', '.join(unknown)}")
 
-    expected_protocol = _normalized_protocol_template(plan.protocol_template)
-    expected_protocol_fingerprint = _canonical_hash(expected_protocol) if expected_protocol else ""
-
     eligible: list[CampaignTrialResult] = []
     rejected: list[dict[str, str]] = []
     for trial in plan.trials:
@@ -303,7 +303,7 @@ def summarize_campaign(
         if result.seed != trial.seed:
             rejected.append({"trial_id": trial.trial_id, "reason": "trial seed mismatch"})
             continue
-        if expected_protocol_fingerprint and result.protocol_fingerprint != expected_protocol_fingerprint:
+        if plan.protocol_template and not _protocol_matches(plan.protocol_template, result.observed_protocol):
             rejected.append({"trial_id": trial.trial_id, "reason": "trial protocol fingerprint mismatch"})
             continue
         if result.attribution_eligible and result.attestation_verified and result.protocol_match:
