@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from worldos_core.experiment_campaign import (
     CampaignTrialResult,
@@ -120,6 +121,39 @@ def test_trial_result_from_causal_report_requires_verified_attribution():
     assert result.outcomes == {"average_hunger": -2.5}
     assert result.behavioral_outcomes == {"conflict_count_delta": -3.0}
     assert result.source_fingerprint
+
+
+def test_eligible_trial_cannot_exist_without_auditable_evidence():
+    with pytest.raises(ValidationError, match="attestation_digest"):
+        CampaignTrialResult(
+            trial_id="trial-1",
+            seed="seed-1",
+            attribution_eligible=True,
+            attestation_verified=True,
+            source_fingerprint="source",
+        )
+    with pytest.raises(ValidationError, match="source_fingerprint"):
+        CampaignTrialResult(
+            trial_id="trial-1",
+            seed="seed-1",
+            attestation_digest="att",
+            attribution_eligible=True,
+            attestation_verified=True,
+        )
+
+
+def test_tied_effect_sign_is_reported_as_mixed_not_arbitrarily_positive_or_zero():
+    plan = build_campaign_plan(campaign_name="tie", base_seed="seed", trial_count=2)
+    report = summarize_campaign(
+        plan,
+        [
+            _eligible(plan.trials[0].trial_id, plan.trials[0].seed, -1.0, 1.0),
+            _eligible(plan.trials[1].trial_id, plan.trials[1].seed, 1.0, -1.0),
+        ],
+    )
+    summary = report.outcome_metrics["inventory_delta"]
+    assert summary.dominant_sign == "mixed"
+    assert summary.sign_consistency == 0.5
 
 
 def test_campaign_rejects_unknown_and_duplicate_trial_ids():
