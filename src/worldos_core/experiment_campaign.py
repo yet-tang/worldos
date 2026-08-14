@@ -166,22 +166,31 @@ def _observed_protocol(causal_report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _protocol_matches(template: dict[str, Any], observed: dict[str, Any]) -> bool:
-    if not template:
-        return True
+def _normalized_protocol_template(template: dict[str, Any]) -> dict[str, Any]:
     aliases = {
         "treatment": "treatment_intervention",
         "control": "control_intervention",
     }
-    for key, expected in template.items():
+    normalized: dict[str, Any] = {}
+    for key, value in template.items():
         observed_key = aliases.get(key, key)
-        if observed_key not in observed:
+        if observed_key not in {"treatment_intervention", "control_intervention", "outcome_names"}:
             continue
-        actual = observed[observed_key]
         if observed_key == "outcome_names":
-            if sorted(str(item) for item in expected) != sorted(str(item) for item in actual):
-                return False
-        elif expected != actual:
+            normalized[observed_key] = sorted(str(item) for item in value)
+        elif isinstance(value, dict):
+            normalized[observed_key] = dict(value)
+        else:
+            normalized[observed_key] = value
+    return normalized
+
+
+def _protocol_matches(template: dict[str, Any], observed: dict[str, Any]) -> bool:
+    normalized = _normalized_protocol_template(template)
+    if not normalized:
+        return True
+    for key, expected in normalized.items():
+        if observed.get(key) != expected:
             return False
     return True
 
@@ -281,6 +290,9 @@ def summarize_campaign(
     if unknown:
         raise ValueError(f"results contain trials outside campaign plan: {', '.join(unknown)}")
 
+    expected_protocol = _normalized_protocol_template(plan.protocol_template)
+    expected_protocol_fingerprint = _canonical_hash(expected_protocol) if expected_protocol else ""
+
     eligible: list[CampaignTrialResult] = []
     rejected: list[dict[str, str]] = []
     for trial in plan.trials:
@@ -290,6 +302,9 @@ def summarize_campaign(
             continue
         if result.seed != trial.seed:
             rejected.append({"trial_id": trial.trial_id, "reason": "trial seed mismatch"})
+            continue
+        if expected_protocol_fingerprint and result.protocol_fingerprint != expected_protocol_fingerprint:
+            rejected.append({"trial_id": trial.trial_id, "reason": "trial protocol fingerprint mismatch"})
             continue
         if result.attribution_eligible and result.attestation_verified and result.protocol_match:
             eligible.append(result)
