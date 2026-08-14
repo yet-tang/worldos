@@ -304,7 +304,7 @@ def summarize_campaign(
             rejected.append({"trial_id": trial.trial_id, "reason": "trial seed mismatch"})
             continue
         if plan.protocol_template and not _protocol_matches(plan.protocol_template, result.observed_protocol):
-            rejected.append({"trial_id": trial.trial_id, "reason": "trial protocol fingerprint mismatch"})
+            rejected.append({"trial_id": trial.trial_id, "reason": "trial protocol does not match campaign template"})
             continue
         if result.attribution_eligible and result.attestation_verified and result.protocol_match:
             eligible.append(result)
