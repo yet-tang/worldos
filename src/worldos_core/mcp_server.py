@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import AnyHttpUrl
 
 from .agent_services import WorldReadService
+from .effective_memory import effective_memory_view
 from .experiment_protocol import ExperimentArm, ExperimentProtocol, causal_report, validate_pre_treatment
 from .experimental_state import ExperimentalCheckpoint, build_atomic_physical_override_event, capture_experimental_checkpoint
 from .experiments import compare_probes
@@ -128,6 +129,16 @@ def build_mcp() -> FastMCP:
         return _service().inspect_actor(world_id, actor_id, timeline=timeline)
 
     @mcp.tool()
+    def inspect_effective_memory(world_id: str, actor_id: str, timeline: str = "main") -> dict[str, Any]:
+        """Inspect branch-local effective memory immediately, without requiring another tick."""
+        bundle = _bundle(world_id, timeline)
+        return effective_memory_view(
+            bundle.events,
+            actor_id=actor_id,
+            current_tick=bundle.world.tick,
+        )
+
+    @mcp.tool()
     def query_events(world_id: str, timeline: str = "main", event_type: str | None = None, actor_id: str | None = None, subject_id: str | None = None, tick: int | None = None, correlation_id: str | None = None, limit: int = 100) -> dict[str, Any]:
         return _service().query_events(world_id, timeline=timeline, event_type=event_type, actor_id=actor_id, subject_id=subject_id, tick=tick, correlation_id=correlation_id, limit=limit)
 
@@ -192,22 +203,26 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     def apply_physical_checkpoint(world_id: str, checkpoint: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main") -> dict[str, Any]:
-        """Restore only allowlisted physical components in one event-sourced atomic intervention."""
+        """Restore only allowlisted physical components in one event-sourced atomic intervention.
+
+        The Control API owns optimistic concurrency and idempotency ordering. This tool
+        intentionally does not reject a stale expected hash locally: an exact retry must
+        reach the persistent ledger before the first execution's state change can make
+        the original hash stale.
+        """
         bundle = _bundle(world_id, timeline_id)
-        current_hash = bundle.world.canonical_hash()
-        if current_hash != expected_world_hash:
-            raise ValueError(f"world hash conflict: expected {expected_world_hash}, current {current_hash}")
         manifest = ExperimentalCheckpoint.model_validate(checkpoint)
         event = build_atomic_physical_override_event(bundle.world, manifest, tick=bundle.world.tick)
         return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
 
     @mcp.tool()
     def apply_memory_intervention(world_id: str, intervention: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main", actor_id: str | None = None) -> dict[str, Any]:
-        """Apply retain/suppress/reinforce/replace treatment without rewriting historical memory events."""
+        """Apply retain/suppress/reinforce/replace treatment without rewriting historical memory events.
+
+        Exact retries are sent to Control unchanged so the ledger can replay them before
+        optimistic-concurrency evaluation.
+        """
         bundle = _bundle(world_id, timeline_id)
-        current_hash = bundle.world.canonical_hash()
-        if current_hash != expected_world_hash:
-            raise ValueError(f"world hash conflict: expected {expected_world_hash}, current {current_hash}")
         event = build_memory_intervention_event(MemoryIntervention.model_validate(intervention), tick=bundle.world.tick, actor_id=actor_id)
         return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
 
@@ -215,9 +230,6 @@ def build_mcp() -> FastMCP:
     def apply_semantic_stimulus(world_id: str, stimulus: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main", experiment_id: str | None = None) -> dict[str, Any]:
         probe = _service().probe_world(world_id, timeline=timeline_id, limit=1)
         snapshot = probe["snapshot"]
-        current_hash = snapshot["world_hash"]
-        if current_hash != expected_world_hash:
-            raise ValueError(f"world hash conflict: expected {expected_world_hash}, current {current_hash}")
         tick = int(snapshot["current_tick"])
         event = semantic_event(tick=tick, stimulus=SemanticStimulus.model_validate(stimulus), experiment_id=experiment_id)
         return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
