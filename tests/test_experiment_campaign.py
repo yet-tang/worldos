@@ -132,6 +132,7 @@ def test_trial_result_from_causal_report_requires_verified_attribution():
     assert result.outcomes == {"average_hunger": -2.5}
     assert result.behavioral_outcomes == {"conflict_count_delta": -3.0}
     assert result.protocol_match is True
+    assert result.observed_protocol["treatment_intervention"] == {"memory.scarcity": "retain"}
     assert result.protocol_fingerprint
     assert result.source_fingerprint
 
@@ -155,7 +156,7 @@ def test_nested_selected_outcomes_become_stable_dotted_scalar_metrics():
     }
 
 
-def test_protocol_drifted_trial_is_rejected_even_when_its_attestation_is_verified():
+def test_protocol_drifted_trial_is_rejected_at_campaign_boundary_even_if_converter_has_no_template():
     template = {
         "treatment_intervention": {"memory.scarcity": "retain"},
         "control_intervention": {"memory.scarcity": "suppress"},
@@ -174,7 +175,6 @@ def test_protocol_drifted_trial_is_rejected_even_when_its_attestation_is_verifie
             treatment={"memory.scarcity": "retain"},
             control={"memory.scarcity": "suppress"},
         ),
-        expected_protocol_template=template,
     )
     drifted = trial_result_from_causal_report(
         trial_id=plan.trials[1].trial_id,
@@ -183,13 +183,12 @@ def test_protocol_drifted_trial_is_rejected_even_when_its_attestation_is_verifie
             treatment={"memory.scarcity": "reinforce"},
             control={"memory.scarcity": "suppress"},
         ),
-        expected_protocol_template=template,
     )
     assert matching.protocol_match is True
     assert drifted.attribution_eligible is True
     assert drifted.attestation_verified is True
-    assert drifted.protocol_match is False
-    assert drifted.rejection_reason == "trial protocol does not match campaign template"
+    assert drifted.protocol_match is True
+    assert matching.observed_protocol != drifted.observed_protocol
     report = summarize_campaign(plan, [matching, drifted])
     assert report.eligible_trial_count == 1
     assert report.rejected_trial_count == 1
