@@ -29,6 +29,8 @@ class CampaignTrialResult(BaseModel):
     attestation_digest: str = ""
     attribution_eligible: bool
     attestation_verified: bool
+    protocol_match: bool = True
+    protocol_fingerprint: str = ""
     outcomes: dict[str, float] = Field(default_factory=dict)
     behavioral_outcomes: dict[str, float] = Field(default_factory=dict)
     rejection_reason: str | None = None
@@ -47,7 +49,7 @@ class CampaignTrialResult(BaseModel):
 
     @model_validator(mode="after")
     def eligible_trials_require_auditable_evidence(self) -> "CampaignTrialResult":
-        if self.attribution_eligible and self.attestation_verified:
+        if self.attribution_eligible and self.attestation_verified and self.protocol_match:
             if not self.attestation_digest.strip():
                 raise ValueError("causally eligible trial requires attestation_digest")
             if not self.source_fingerprint.strip():
@@ -133,12 +135,45 @@ def build_campaign_plan(
     )
 
 
+def _observed_protocol(causal_report: dict[str, Any]) -> dict[str, Any]:
+    protocol = causal_report.get("protocol", {}) if isinstance(causal_report, dict) else {}
+    treatment = protocol.get("treatment", {}) if isinstance(protocol, dict) else {}
+    control = protocol.get("control", {}) if isinstance(protocol, dict) else {}
+    selected = causal_report.get("selected_outcomes", {}) if isinstance(causal_report, dict) else {}
+    return {
+        "treatment_intervention": dict(treatment.get("intervention") or {}) if isinstance(treatment, dict) else {},
+        "control_intervention": dict(control.get("intervention") or {}) if isinstance(control, dict) else {},
+        "outcome_names": sorted(str(key) for key in selected) if isinstance(selected, dict) else [],
+    }
+
+
+def _protocol_matches(template: dict[str, Any], observed: dict[str, Any]) -> bool:
+    if not template:
+        return True
+    aliases = {
+        "treatment": "treatment_intervention",
+        "control": "control_intervention",
+    }
+    for key, expected in template.items():
+        observed_key = aliases.get(key, key)
+        if observed_key not in observed:
+            continue
+        actual = observed[observed_key]
+        if observed_key == "outcome_names":
+            if sorted(str(item) for item in expected) != sorted(str(item) for item in actual):
+                return False
+        elif expected != actual:
+            return False
+    return True
+
+
 def trial_result_from_causal_report(
     *,
     trial_id: str,
     seed: str,
     causal_report: dict[str, Any],
     behavioral_outcomes: dict[str, float] | None = None,
+    expected_protocol_template: dict[str, Any] | None = None,
 ) -> CampaignTrialResult:
     attribution = causal_report.get("attribution", {}) if isinstance(causal_report, dict) else {}
     pre = causal_report.get("pre_treatment_equivalence", {}) if isinstance(causal_report, dict) else {}
@@ -149,22 +184,29 @@ def trial_result_from_causal_report(
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             outcomes[str(key)] = float(value)
 
+    observed_protocol = _observed_protocol(causal_report)
+    protocol_match = _protocol_matches(dict(expected_protocol_template or {}), observed_protocol)
     eligible = bool(attribution.get("eligible"))
     verified = bool(pre.get("attestation_verified"))
     reason = None
-    if not eligible or not verified:
+    if not protocol_match:
+        reason = "trial protocol does not match campaign template"
+    elif not eligible or not verified:
         errors = pre.get("verification_errors") if isinstance(pre, dict) else None
         if isinstance(errors, list) and errors:
             reason = "; ".join(str(item) for item in errors)
         else:
             reason = str(attribution.get("reason") or "trial is not causally eligible")
 
+    protocol_fingerprint = _canonical_hash(observed_protocol)
     fingerprint_payload = {
         "trial_id": trial_id,
         "seed": seed,
         "attestation_digest": str(pre.get("attestation_digest") or ""),
         "attribution_eligible": eligible,
         "attestation_verified": verified,
+        "protocol_match": protocol_match,
+        "protocol_fingerprint": protocol_fingerprint,
         "outcomes": outcomes,
         "behavioral_outcomes": dict(behavioral_outcomes or {}),
     }
@@ -175,6 +217,8 @@ def trial_result_from_causal_report(
         attestation_digest=str(pre.get("attestation_digest") or ""),
         attribution_eligible=eligible,
         attestation_verified=verified,
+        protocol_match=protocol_match,
+        protocol_fingerprint=protocol_fingerprint,
         outcomes=outcomes,
         behavioral_outcomes=dict(behavioral_outcomes or {}),
         rejection_reason=reason,
@@ -232,12 +276,12 @@ def summarize_campaign(
         if result.seed != trial.seed:
             rejected.append({"trial_id": trial.trial_id, "reason": "trial seed mismatch"})
             continue
-        if result.attribution_eligible and result.attestation_verified:
+        if result.attribution_eligible and result.attestation_verified and result.protocol_match:
             eligible.append(result)
         else:
             rejected.append({
                 "trial_id": trial.trial_id,
-                "reason": result.rejection_reason or "causal attribution not eligible or not verified",
+                "reason": result.rejection_reason or "causal attribution not eligible, not verified, or protocol mismatched",
             })
 
     outcome_names = sorted({name for result in eligible for name in result.outcomes})
