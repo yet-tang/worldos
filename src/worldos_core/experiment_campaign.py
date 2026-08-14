@@ -91,6 +91,25 @@ def _canonical_hash(payload: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _flatten_numeric_metrics(value: Any, *, prefix: str = "") -> dict[str, float]:
+    """Flatten numeric leaves from causal-report outcome structures.
+
+    Phase I exposes outcomes such as ``inventory_totals`` as nested dictionaries. A
+    replicated campaign needs stable scalar metric names, so nested leaves become dotted
+    keys (for example ``inventory_totals.food``). Booleans and non-numeric leaves are
+    intentionally ignored rather than coerced.
+    """
+
+    result: dict[str, float] = {}
+    if isinstance(value, dict):
+        for key in sorted(value):
+            name = f"{prefix}.{key}" if prefix else str(key)
+            result.update(_flatten_numeric_metrics(value[key], prefix=name))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool) and prefix:
+        result[prefix] = float(value)
+    return result
+
+
 def build_campaign_plan(
     *,
     campaign_name: str,
@@ -178,11 +197,7 @@ def trial_result_from_causal_report(
     attribution = causal_report.get("attribution", {}) if isinstance(causal_report, dict) else {}
     pre = causal_report.get("pre_treatment_equivalence", {}) if isinstance(causal_report, dict) else {}
     selected = causal_report.get("selected_outcomes", {}) if isinstance(causal_report, dict) else {}
-
-    outcomes: dict[str, float] = {}
-    for key, value in selected.items() if isinstance(selected, dict) else ():
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            outcomes[str(key)] = float(value)
+    outcomes = _flatten_numeric_metrics(selected if isinstance(selected, dict) else {})
 
     observed_protocol = _observed_protocol(causal_report)
     protocol_match = _protocol_matches(dict(expected_protocol_template or {}), observed_protocol)
