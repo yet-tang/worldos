@@ -13,6 +13,13 @@ from pydantic import AnyHttpUrl
 
 from .agent_services import WorldReadService
 from .effective_memory import effective_memory_view
+from .experiment_campaign import (
+    CampaignTrialResult,
+    ExperimentCampaignPlan,
+    build_campaign_plan,
+    summarize_campaign,
+    trial_result_from_causal_report,
+)
 from .experiment_protocol import (
     ExperimentArm,
     ExperimentProtocol,
@@ -225,6 +232,33 @@ def build_mcp() -> FastMCP:
     @mcp.tool()
     def diagnose_world(world_id: str, timeline: str = "main") -> dict[str, Any]:
         return _service().get_diagnostics(world_id, timeline=timeline)
+
+    @mcp.tool()
+    def plan_experiment_campaign(campaign_name: str, base_seed: str, trial_count: int, protocol_template: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Build a deterministic multi-seed causal replication plan without mutating worlds."""
+        return build_campaign_plan(
+            campaign_name=campaign_name,
+            base_seed=base_seed,
+            trial_count=trial_count,
+            protocol_template=protocol_template,
+        ).model_dump(mode="json")
+
+    @mcp.tool()
+    def campaign_trial_result(trial_id: str, seed: str, causal_report: dict[str, Any], behavioral_outcomes: dict[str, float] | None = None) -> dict[str, Any]:
+        """Normalize one Phase I causal report into auditable campaign evidence."""
+        return trial_result_from_causal_report(
+            trial_id=trial_id,
+            seed=seed,
+            causal_report=causal_report,
+            behavioral_outcomes=behavioral_outcomes,
+        ).model_dump(mode="json")
+
+    @mcp.tool()
+    def summarize_experiment_campaign(plan: dict[str, Any], trial_results: list[dict[str, Any]]) -> dict[str, Any]:
+        """Aggregate only causally eligible and historically verified campaign trials."""
+        validated_plan = ExperimentCampaignPlan.model_validate(plan)
+        validated_results = [CampaignTrialResult.model_validate(item) for item in trial_results]
+        return summarize_campaign(validated_plan, validated_results).model_dump(mode="json")
 
     @mcp.tool()
     def capture_experiment_checkpoint(world_id: str, timeline_id: str = "main", actor_ids: list[str] | None = None, component_names: list[str] | None = None) -> dict[str, Any]:
