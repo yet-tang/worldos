@@ -100,15 +100,26 @@ def test_seed_mismatch_is_rejected_not_silently_aggregated():
     assert report.outcome_metrics["inventory_delta"].values == (2.0,)
 
 
-def test_trial_result_from_causal_report_requires_verified_attribution():
-    causal = {
+def _causal_report(*, treatment: dict, control: dict, value: float = -2.5) -> dict:
+    return {
+        "protocol": {
+            "treatment": {"intervention": treatment},
+            "control": {"intervention": control},
+        },
         "pre_treatment_equivalence": {
             "attestation_verified": True,
             "attestation_digest": "abc",
         },
         "attribution": {"eligible": True, "reason": "verified"},
-        "selected_outcomes": {"average_hunger": -2.5, "nested": {"ignored": 1}},
+        "selected_outcomes": {"average_hunger": value},
     }
+
+
+def test_trial_result_from_causal_report_requires_verified_attribution():
+    causal = _causal_report(
+        treatment={"memory.scarcity": "retain"},
+        control={"memory.scarcity": "suppress"},
+    )
     result = trial_result_from_causal_report(
         trial_id="trial-1",
         seed="seed-1",
@@ -120,7 +131,50 @@ def test_trial_result_from_causal_report_requires_verified_attribution():
     assert result.attestation_digest == "abc"
     assert result.outcomes == {"average_hunger": -2.5}
     assert result.behavioral_outcomes == {"conflict_count_delta": -3.0}
+    assert result.protocol_match is True
+    assert result.protocol_fingerprint
     assert result.source_fingerprint
+
+
+def test_protocol_drifted_trial_is_rejected_even_when_its_attestation_is_verified():
+    template = {
+        "treatment_intervention": {"memory.scarcity": "retain"},
+        "control_intervention": {"memory.scarcity": "suppress"},
+        "outcome_names": ["average_hunger"],
+    }
+    plan = build_campaign_plan(
+        campaign_name="protocol guard",
+        base_seed="seed",
+        trial_count=2,
+        protocol_template=template,
+    )
+    matching = trial_result_from_causal_report(
+        trial_id=plan.trials[0].trial_id,
+        seed=plan.trials[0].seed,
+        causal_report=_causal_report(
+            treatment={"memory.scarcity": "retain"},
+            control={"memory.scarcity": "suppress"},
+        ),
+        expected_protocol_template=template,
+    )
+    drifted = trial_result_from_causal_report(
+        trial_id=plan.trials[1].trial_id,
+        seed=plan.trials[1].seed,
+        causal_report=_causal_report(
+            treatment={"memory.scarcity": "reinforce"},
+            control={"memory.scarcity": "suppress"},
+        ),
+        expected_protocol_template=template,
+    )
+    assert matching.protocol_match is True
+    assert drifted.attribution_eligible is True
+    assert drifted.attestation_verified is True
+    assert drifted.protocol_match is False
+    assert drifted.rejection_reason == "trial protocol does not match campaign template"
+    report = summarize_campaign(plan, [matching, drifted])
+    assert report.eligible_trial_count == 1
+    assert report.rejected_trial_count == 1
+    assert report.rejected_trials[0]["reason"] == "trial protocol does not match campaign template"
 
 
 def test_eligible_trial_cannot_exist_without_auditable_evidence():
