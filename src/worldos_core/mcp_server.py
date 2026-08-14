@@ -13,7 +13,15 @@ from pydantic import AnyHttpUrl
 
 from .agent_services import WorldReadService
 from .effective_memory import effective_memory_view
-from .experiment_protocol import ExperimentArm, ExperimentProtocol, causal_report, validate_pre_treatment
+from .experiment_protocol import (
+    ExperimentArm,
+    ExperimentProtocol,
+    PreTreatmentAttestation,
+    attest_pre_treatment,
+    causal_report,
+    validate_pre_treatment,
+    verify_pre_treatment_attestation,
+)
 from .experimental_state import ExperimentalCheckpoint, build_atomic_physical_override_event, capture_experimental_checkpoint
 from .experiments import compare_probes
 from .inspector import WorldInspector
@@ -94,6 +102,74 @@ def _inject_experimental_event(world_id: str, timeline_id: str, expected_world_h
     )
 
 
+def _apply_physical_checkpoint_request(
+    world_id: str,
+    checkpoint: dict[str, Any],
+    expected_world_hash: str,
+    idempotency_key: str,
+    reason: str,
+    *,
+    timeline_id: str = "main",
+) -> dict[str, Any]:
+    """Compile and send a physical override without pre-empting Control replay semantics."""
+    bundle = _bundle(world_id, timeline_id)
+    manifest = ExperimentalCheckpoint.model_validate(checkpoint)
+    event = build_atomic_physical_override_event(bundle.world, manifest, tick=bundle.world.tick)
+    return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+
+
+def _apply_memory_intervention_request(
+    world_id: str,
+    intervention: dict[str, Any],
+    expected_world_hash: str,
+    idempotency_key: str,
+    reason: str,
+    *,
+    timeline_id: str = "main",
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """Compile and send a memory intervention without local stale-hash rejection."""
+    bundle = _bundle(world_id, timeline_id)
+    event = build_memory_intervention_event(
+        MemoryIntervention.model_validate(intervention),
+        tick=bundle.world.tick,
+        actor_id=actor_id,
+    )
+    return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+
+
+def _apply_semantic_stimulus_request(
+    world_id: str,
+    stimulus: dict[str, Any],
+    expected_world_hash: str,
+    idempotency_key: str,
+    reason: str,
+    *,
+    timeline_id: str = "main",
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
+    probe = _service().probe_world(world_id, timeline=timeline_id, limit=1)
+    tick = int(probe["snapshot"]["current_tick"])
+    event = semantic_event(tick=tick, stimulus=SemanticStimulus.model_validate(stimulus), experiment_id=experiment_id)
+    return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+
+
+def _protocol(
+    checkpoint_digest: str,
+    treatment_timeline: str,
+    control_timeline: str,
+    treatment_intervention: dict[str, Any],
+    control_intervention: dict[str, Any],
+    actor_ids: list[str] | None = None,
+) -> ExperimentProtocol:
+    return ExperimentProtocol(
+        checkpoint_digest=checkpoint_digest,
+        treatment=ExperimentArm(name="treatment", timeline_id=treatment_timeline, declared_intervention=treatment_intervention),
+        control=ExperimentArm(name="control", timeline_id=control_timeline, declared_intervention=control_intervention),
+        actor_ids=tuple(actor_ids or ()),
+    )
+
+
 def build_mcp() -> FastMCP:
     public_url = os.environ.get("WORLDOS_MCP_PUBLIC_URL", "https://worldos.invalid/mcp").strip()
     issuer_url = os.environ.get("WORLDOS_MCP_ISSUER_URL", "https://worldos.invalid/auth").strip()
@@ -132,11 +208,7 @@ def build_mcp() -> FastMCP:
     def inspect_effective_memory(world_id: str, actor_id: str, timeline: str = "main") -> dict[str, Any]:
         """Inspect branch-local effective memory immediately, without requiring another tick."""
         bundle = _bundle(world_id, timeline)
-        return effective_memory_view(
-            bundle.events,
-            actor_id=actor_id,
-            current_tick=bundle.world.tick,
-        )
+        return effective_memory_view(bundle.events, actor_id=actor_id, current_tick=bundle.world.tick)
 
     @mcp.tool()
     def query_events(world_id: str, timeline: str = "main", event_type: str | None = None, actor_id: str | None = None, subject_id: str | None = None, tick: int | None = None, correlation_id: str | None = None, limit: int = 100) -> dict[str, Any]:
@@ -156,7 +228,6 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     def capture_experiment_checkpoint(world_id: str, timeline_id: str = "main", actor_ids: list[str] | None = None, component_names: list[str] | None = None) -> dict[str, Any]:
-        """Capture an immutable physical-state manifest for later causal equalization."""
         bundle = _bundle(world_id, timeline_id)
         checkpoint = capture_experimental_checkpoint(
             bundle.world,
@@ -174,13 +245,22 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     def validate_experiment_equivalence(world_id: str, treatment_timeline: str, control_timeline: str, checkpoint_digest: str, treatment_intervention: dict[str, Any], control_intervention: dict[str, Any], actor_ids: list[str] | None = None) -> dict[str, Any]:
-        protocol = ExperimentProtocol(
-            checkpoint_digest=checkpoint_digest,
-            treatment=ExperimentArm(name="treatment", timeline_id=treatment_timeline, declared_intervention=treatment_intervention),
-            control=ExperimentArm(name="control", timeline_id=control_timeline, declared_intervention=control_intervention),
-            actor_ids=tuple(actor_ids or ()),
-        )
+        protocol = _protocol(checkpoint_digest, treatment_timeline, control_timeline, treatment_intervention, control_intervention, actor_ids)
         return validate_pre_treatment(protocol, _bundle(world_id, treatment_timeline).world, _bundle(world_id, control_timeline).world)
+
+    @mcp.tool()
+    def attest_experiment_equivalence(world_id: str, treatment_timeline: str, control_timeline: str, checkpoint_digest: str, treatment_intervention: dict[str, Any], control_intervention: dict[str, Any], actor_ids: list[str] | None = None) -> dict[str, Any]:
+        """Create a deterministic historical anchor for later post-outcome causal reporting."""
+        protocol = _protocol(checkpoint_digest, treatment_timeline, control_timeline, treatment_intervention, control_intervention, actor_ids)
+        treatment_bundle = _bundle(world_id, treatment_timeline)
+        control_bundle = _bundle(world_id, control_timeline)
+        return attest_pre_treatment(
+            protocol,
+            treatment_bundle.world,
+            control_bundle.world,
+            treatment_event_count=len(treatment_bundle.events),
+            control_event_count=len(control_bundle.events),
+        ).model_dump(mode="json")
 
     @mcp.tool()
     def create_world(config: dict[str, Any], idempotency_key: str, reason: str) -> dict[str, Any]:
@@ -203,51 +283,34 @@ def build_mcp() -> FastMCP:
 
     @mcp.tool()
     def apply_physical_checkpoint(world_id: str, checkpoint: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main") -> dict[str, Any]:
-        """Restore only allowlisted physical components in one event-sourced atomic intervention.
-
-        The Control API owns optimistic concurrency and idempotency ordering. This tool
-        intentionally does not reject a stale expected hash locally: an exact retry must
-        reach the persistent ledger before the first execution's state change can make
-        the original hash stale.
-        """
-        bundle = _bundle(world_id, timeline_id)
-        manifest = ExperimentalCheckpoint.model_validate(checkpoint)
-        event = build_atomic_physical_override_event(bundle.world, manifest, tick=bundle.world.tick)
-        return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+        return _apply_physical_checkpoint_request(world_id, checkpoint, expected_world_hash, idempotency_key, reason, timeline_id=timeline_id)
 
     @mcp.tool()
     def apply_memory_intervention(world_id: str, intervention: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main", actor_id: str | None = None) -> dict[str, Any]:
-        """Apply retain/suppress/reinforce/replace treatment without rewriting historical memory events.
-
-        Exact retries are sent to Control unchanged so the ledger can replay them before
-        optimistic-concurrency evaluation.
-        """
-        bundle = _bundle(world_id, timeline_id)
-        event = build_memory_intervention_event(MemoryIntervention.model_validate(intervention), tick=bundle.world.tick, actor_id=actor_id)
-        return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+        return _apply_memory_intervention_request(world_id, intervention, expected_world_hash, idempotency_key, reason, timeline_id=timeline_id, actor_id=actor_id)
 
     @mcp.tool()
     def apply_semantic_stimulus(world_id: str, stimulus: dict[str, Any], expected_world_hash: str, idempotency_key: str, reason: str, timeline_id: str = "main", experiment_id: str | None = None) -> dict[str, Any]:
-        probe = _service().probe_world(world_id, timeline=timeline_id, limit=1)
-        snapshot = probe["snapshot"]
-        tick = int(snapshot["current_tick"])
-        event = semantic_event(tick=tick, stimulus=SemanticStimulus.model_validate(stimulus), experiment_id=experiment_id)
-        return _inject_experimental_event(world_id, timeline_id, expected_world_hash, idempotency_key, reason, event)
+        return _apply_semantic_stimulus_request(world_id, stimulus, expected_world_hash, idempotency_key, reason, timeline_id=timeline_id, experiment_id=experiment_id)
 
     @mcp.tool()
     def compare_timelines(world_id: str, control_timeline: str, experiment_timeline: str, limit: int = 50) -> dict[str, Any]:
         return compare_probes(_service().probe_world(world_id, timeline=control_timeline, limit=limit), _service().probe_world(world_id, timeline=experiment_timeline, limit=limit))
 
     @mcp.tool()
-    def causal_experiment_report(world_id: str, treatment_timeline: str, control_timeline: str, checkpoint_digest: str, treatment_intervention: dict[str, Any], control_intervention: dict[str, Any], outcome_names: list[str] | None = None, actor_ids: list[str] | None = None, limit: int = 50) -> dict[str, Any]:
-        """Return attribution only when physical equivalence, seed equality, and declared treatment difference hold."""
-        protocol = ExperimentProtocol(
-            checkpoint_digest=checkpoint_digest,
-            treatment=ExperimentArm(name="treatment", timeline_id=treatment_timeline, declared_intervention=treatment_intervention),
-            control=ExperimentArm(name="control", timeline_id=control_timeline, declared_intervention=control_intervention),
-            actor_ids=tuple(actor_ids or ()),
-        )
-        pre = validate_pre_treatment(protocol, _bundle(world_id, treatment_timeline).world, _bundle(world_id, control_timeline).world)
+    def causal_experiment_report(world_id: str, treatment_timeline: str, control_timeline: str, checkpoint_digest: str, treatment_intervention: dict[str, Any], control_intervention: dict[str, Any], outcome_names: list[str] | None = None, actor_ids: list[str] | None = None, limit: int = 50, pre_treatment_attestation: dict[str, Any] | None = None) -> dict[str, Any]:
+        protocol = _protocol(checkpoint_digest, treatment_timeline, control_timeline, treatment_intervention, control_intervention, actor_ids)
+        treatment_bundle = _bundle(world_id, treatment_timeline)
+        control_bundle = _bundle(world_id, control_timeline)
+        if pre_treatment_attestation is not None:
+            pre = verify_pre_treatment_attestation(
+                protocol,
+                PreTreatmentAttestation.model_validate(pre_treatment_attestation),
+                treatment_history=treatment_bundle.events,
+                control_history=control_bundle.events,
+            )
+        else:
+            pre = validate_pre_treatment(protocol, treatment_bundle.world, control_bundle.world)
         return causal_report(
             protocol,
             pre_treatment=pre,
