@@ -124,23 +124,32 @@ def compare_behavioral_phenotypes(
     }
     first_delta = treatment.first_tick - control.first_tick if treatment.first_tick is not None and control.first_tick is not None else None
     last_delta = treatment.last_tick - control.last_tick if treatment.last_tick is not None and control.last_tick is not None else None
-    payload = {
-        "name": treatment.name,
-        "treatment_fingerprint": treatment.phenotype_fingerprint,
-        "control_fingerprint": control.phenotype_fingerprint,
+    comparison_fields = {
         "event_count_delta": treatment.selected_event_count - control.selected_event_count,
         "participant_count_delta": treatment.participant_count - control.participant_count,
-        "first_tick_delta": first_delta, "last_tick_delta": last_delta,
+        "first_tick_delta": first_delta,
+        "last_tick_delta": last_delta,
         "active_tick_span_delta": treatment.active_tick_span - control.active_tick_span,
         "burst_tick_count_delta": treatment.burst_tick_count - control.burst_tick_count,
         "peak_events_per_tick_delta": treatment.peak_events_per_tick - control.peak_events_per_tick,
-        "event_type_deltas": event_deltas, "participant_event_deltas": participant_deltas,
+        "event_type_deltas": event_deltas,
+        "participant_event_deltas": participant_deltas,
+    }
+    fingerprint_payload = {
+        "name": treatment.name,
+        "treatment_fingerprint": treatment.phenotype_fingerprint,
+        "control_fingerprint": control.phenotype_fingerprint,
+        **comparison_fields,
     }
     return BehavioralPhenotypeComparison(
-        name=treatment.name, treatment_timeline=treatment.timeline_id, control_timeline=control.timeline_id,
-        treatment_fingerprint=treatment.phenotype_fingerprint, control_fingerprint=control.phenotype_fingerprint,
+        name=treatment.name,
+        treatment_timeline=treatment.timeline_id,
+        control_timeline=control.timeline_id,
+        treatment_fingerprint=treatment.phenotype_fingerprint,
+        control_fingerprint=control.phenotype_fingerprint,
         identical=treatment.phenotype_fingerprint == control.phenotype_fingerprint,
-        comparison_fingerprint=_canonical_hash(payload), **payload,
+        comparison_fingerprint=_canonical_hash(fingerprint_payload),
+        **comparison_fields,
     )
 
 
