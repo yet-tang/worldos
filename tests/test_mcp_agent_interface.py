@@ -47,6 +47,15 @@ def test_mcp_server_builds_with_control_tools(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("WORLDOS_MCP_ISSUER_URL", "https://worldos.example/auth")
     server = build_mcp()
     assert server.name == "WorldOS"
+    tools = getattr(getattr(server, "_tool_manager", None), "_tools", {})
+    if tools:
+        names = set(tools)
+        assert {
+            "behavioral_trajectory",
+            "compare_behavioral_trajectory",
+            "behavioral_phenotype",
+            "compare_behavioral_phenotype",
+        }.issubset(names)
 
 
 def test_control_bridge_fails_closed_without_control_token(monkeypatch) -> None:

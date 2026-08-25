@@ -12,6 +12,13 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import AnyHttpUrl
 
 from .agent_services import WorldReadService
+from .behavioral_phenotype import (
+    BehavioralPhenotypeComparison,
+    build_behavioral_phenotype,
+    compare_behavioral_phenotypes,
+    phenotype_comparison_numeric_metrics,
+)
+from .behavioral_trajectory import build_behavioral_trajectory, compare_behavioral_trajectories
 from .effective_memory import effective_memory_view
 from .experiment_campaign import (
     CampaignTrialResult,
@@ -177,6 +184,17 @@ def _protocol(
     )
 
 
+def _campaign_behavioral_metrics(
+    behavioral_outcomes: dict[str, float] | None,
+    phenotype_comparisons: list[dict[str, Any]] | None,
+) -> dict[str, float]:
+    metrics = {str(key): float(value) for key, value in (behavioral_outcomes or {}).items()}
+    for item in phenotype_comparisons or ():
+        comparison = BehavioralPhenotypeComparison.model_validate(item)
+        metrics.update(phenotype_comparison_numeric_metrics(comparison))
+    return metrics
+
+
 def build_mcp() -> FastMCP:
     public_url = os.environ.get("WORLDOS_MCP_PUBLIC_URL", "https://worldos.invalid/mcp").strip()
     issuer_url = os.environ.get("WORLDOS_MCP_ISSUER_URL", "https://worldos.invalid/auth").strip()
@@ -234,6 +252,113 @@ def build_mcp() -> FastMCP:
         return _service().get_diagnostics(world_id, timeline=timeline)
 
     @mcp.tool()
+    def behavioral_trajectory(
+        world_id: str,
+        timeline: str = "main",
+        event_types: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+        max_sequence_events: int = 5000,
+    ) -> dict[str, Any]:
+        """Project a deterministic behavioral path from one timeline's event history."""
+        bundle = _bundle(world_id, timeline)
+        return build_behavioral_trajectory(
+            bundle.events,
+            timeline_id=timeline,
+            event_types=event_types,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+            max_sequence_events=max_sequence_events,
+        ).model_dump(mode="json")
+
+    @mcp.tool()
+    def compare_behavioral_trajectory(
+        world_id: str,
+        treatment_timeline: str,
+        control_timeline: str,
+        event_types: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+        max_sequence_events: int = 5000,
+    ) -> dict[str, Any]:
+        """Locate the first behavioral divergence and summarize treatment/control trajectory deltas."""
+        treatment_bundle = _bundle(world_id, treatment_timeline)
+        control_bundle = _bundle(world_id, control_timeline)
+        treatment = build_behavioral_trajectory(
+            treatment_bundle.events,
+            timeline_id=treatment_timeline,
+            event_types=event_types,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+            max_sequence_events=max_sequence_events,
+        )
+        control = build_behavioral_trajectory(
+            control_bundle.events,
+            timeline_id=control_timeline,
+            event_types=event_types,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+            max_sequence_events=max_sequence_events,
+        )
+        return compare_behavioral_trajectories(treatment, control).model_dump(mode="json")
+
+    @mcp.tool()
+    def behavioral_phenotype(
+        world_id: str,
+        name: str,
+        timeline: str = "main",
+        actor_ids: list[str] | None = None,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+    ) -> dict[str, Any]:
+        """Summarize a domain phenotype such as scarcity, rumor, conflict, trade, or social behavior."""
+        bundle = _bundle(world_id, timeline)
+        return build_behavioral_phenotype(
+            bundle.events,
+            timeline_id=timeline,
+            name=name,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+        ).model_dump(mode="json")
+
+    @mcp.tool()
+    def compare_behavioral_phenotype(
+        world_id: str,
+        name: str,
+        treatment_timeline: str,
+        control_timeline: str,
+        actor_ids: list[str] | None = None,
+        from_tick: int | None = None,
+        to_tick: int | None = None,
+    ) -> dict[str, Any]:
+        """Compare one behavioral phenotype between treatment and control timelines."""
+        treatment_bundle = _bundle(world_id, treatment_timeline)
+        control_bundle = _bundle(world_id, control_timeline)
+        treatment = build_behavioral_phenotype(
+            treatment_bundle.events,
+            timeline_id=treatment_timeline,
+            name=name,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+        )
+        control = build_behavioral_phenotype(
+            control_bundle.events,
+            timeline_id=control_timeline,
+            name=name,
+            actor_ids=actor_ids,
+            from_tick=from_tick,
+            to_tick=to_tick,
+        )
+        return compare_behavioral_phenotypes(treatment, control).model_dump(mode="json")
+
+    @mcp.tool()
     def plan_experiment_campaign(campaign_name: str, base_seed: str, trial_count: int, protocol_template: dict[str, Any] | None = None) -> dict[str, Any]:
         """Build a deterministic multi-seed causal replication plan without mutating worlds."""
         return build_campaign_plan(
@@ -244,13 +369,21 @@ def build_mcp() -> FastMCP:
         ).model_dump(mode="json")
 
     @mcp.tool()
-    def campaign_trial_result(trial_id: str, seed: str, causal_report: dict[str, Any], behavioral_outcomes: dict[str, float] | None = None) -> dict[str, Any]:
-        """Normalize one Phase I causal report into auditable campaign evidence."""
+    def campaign_trial_result(
+        trial_id: str,
+        seed: str,
+        causal_report: dict[str, Any],
+        behavioral_outcomes: dict[str, float] | None = None,
+        phenotype_comparisons: list[dict[str, Any]] | None = None,
+        expected_protocol_template: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Normalize one causal report and optional Phase K phenotype deltas into campaign evidence."""
         return trial_result_from_causal_report(
             trial_id=trial_id,
             seed=seed,
             causal_report=causal_report,
-            behavioral_outcomes=behavioral_outcomes,
+            behavioral_outcomes=_campaign_behavioral_metrics(behavioral_outcomes, phenotype_comparisons),
+            expected_protocol_template=expected_protocol_template,
         ).model_dump(mode="json")
 
     @mcp.tool()
