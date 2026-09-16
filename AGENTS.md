@@ -1,6 +1,6 @@
 # WorldOS Agent Collaboration Contract
 
-This file defines the repository-level collaboration contract for human operators, source-development agents, VPS execution agents, and future specialist agents.
+This file defines the repository-level collaboration contract for human operators, architecture/source coordination agents, local development agents, VPS execution agents, and future specialist agents.
 
 ## Roles
 
@@ -10,18 +10,35 @@ The human owner is the final authority for irreversible production decisions, cr
 
 Routine development, CI, deployment, smoke testing, and acceptance testing should not require the human owner to manually relay instructions between agents.
 
-### Source Development Agent
+### Architect Agent
 
-The source-development agent owns:
+The Architect Agent owns:
 
-- architecture and implementation;
-- tests and documentation;
-- branches, commits, pull requests, and CI diagnosis;
-- release/deployment task contracts;
+- phase goals, non-goals, architecture and public contracts;
+- task decomposition and acceptance criteria;
+- GitHub Task Contracts for implementation and production acceptance;
+- pull-request review and architecture conformance;
+- CI diagnosis and source-level remediation direction;
 - analysis of VPS execution reports;
-- source fixes when production acceptance exposes implementation defects.
+- deciding whether work is merge/deploy ready.
 
-It must not ask the VPS agent to bypass event sourcing, optimistic concurrency, persistent idempotency, or production safety boundaries merely to make an acceptance test pass.
+The Architect Agent should normally delegate repository implementation to the Local Development Agent instead of requiring the Human Owner to relay code instructions.
+
+### Local Development Agent
+
+The Local Development Agent is the repository implementation engineer. It owns:
+
+- isolated branch/worktree implementation;
+- unit and integration tests;
+- local runtime validation;
+- commits and pull-request updates;
+- responding to Architect review and CI failures.
+
+It follows `docs/operations/local-development-agent-protocol.md`.
+
+It must not silently redesign architecture, weaken tests to obtain green CI, access production secrets, deploy production, or mutate production worlds.
+
+Preferred routing labels are `agent:local-dev` + `status:ready`.
 
 ### VPS Execution Agent
 
@@ -46,13 +63,28 @@ Use GitHub as the durable communication channel between agents:
 - **Issue label** = task state/routing metadata
 - **Commit / Pull Request** = source changes
 - **GitHub Actions** = CI and image build evidence
+- **Local machine** = implementation/test execution environment
 - **VPS** = production execution environment
 
 Runtime reports should normally be Issue comments rather than committed report files. Do not pollute source history with transient deployment logs unless a report is intentionally part of permanent project documentation.
 
+## Task Routing
+
+Implementation work normally uses:
+
+- `agent:local-dev`
+- `status:ready`
+
+Production deployment/E2E work normally uses:
+
+- `agent:vps`
+- `status:ready`
+
+Do not route the same task simultaneously to multiple accountable executors unless the Architect Agent explicitly defines coordinated subtasks.
+
 ## Task State Machine
 
-Canonical states:
+Canonical terminal/general states:
 
 - `READY`
 - `RUNNING`
@@ -61,50 +93,25 @@ Canonical states:
 - `PASSED`
 - `CANCELLED`
 
-When labels are available, prefer:
+Local-development handoff may additionally use:
 
-- `agent:vps`
-- `status:ready`
-- `status:running`
-- `status:blocked`
-- `status:failed`
-- `status:passed`
+- `LOCAL_TESTED`
+- `REVIEW`
+- `CHANGES_REQUESTED`
 
-Every VPS status comment starts with:
-
-`STATUS: <STATE>`
-
-A task may also declare routing/state in its body when labels are unavailable:
-
-`Agent: VPS`
-
-`Status: READY`
+When labels are available, prefer corresponding `status:*` labels. Every agent status comment starts with `STATUS: <STATE>`.
 
 ## Required Task Contract
 
-A VPS task must specify, at minimum:
+Every routed task must specify enough information for its executor to act safely. Development tasks should include goal/non-goals, architecture constraints, base ref, required behavior/API, determinism/compatibility requirements, tests, forbidden shortcuts, and definition of done. Deployment tasks additionally pin target commit/image, production safety boundaries, acceptance criteria, cleanup, and report shape.
 
-- task purpose;
-- target commit;
-- target image when deployment is involved;
-- environment;
-- allowed actions;
-- forbidden actions;
-- acceptance criteria;
-- cleanup requirements;
-- expected report shape.
-
-If a required field cannot be inferred safely, the VPS agent must not guess. It reports:
-
-`STATUS: BLOCKED`
-
-with the missing information.
+If material information cannot be inferred safely, the executor must not guess. It reports `STATUS: BLOCKED` with the missing contract detail.
 
 ## Instruction Precedence
 
-For a single task Issue, the latest explicit source-agent instruction supersedes older task details where they conflict.
+For a single Task Issue, the latest explicit Architect instruction supersedes older task details where they conflict.
 
-The following safety invariants cannot be silently removed by a routine follow-up comment:
+The following invariants cannot be silently removed by a routine follow-up:
 
 - no secret disclosure;
 - no unauthorized mutation of real production worlds;
@@ -112,9 +119,26 @@ The following safety invariants cannot be silently removed by a routine follow-u
 - no bypass of event sourcing;
 - no bypass of optimistic concurrency;
 - no bypass of idempotency;
+- no weakening of causal guards merely to obtain a desired result;
 - no unauthorized infrastructure changes.
 
-Material relaxation of those invariants requires explicit human-owner approval.
+Material relaxation requires explicit Human Owner approval.
+
+## Development Safety Defaults
+
+The Local Development Agent:
+
+- never implements directly on `main`;
+- uses an isolated branch/worktree;
+- does not overwrite unrelated local changes;
+- does not access production credentials;
+- does not deploy production;
+- does not weaken/delete/skip tests merely to make them pass;
+- does not introduce unseeded randomness or unstable ordering into deterministic outputs;
+- keeps changes scoped to the Task Contract;
+- reports exact local test commands/results before review.
+
+Detailed rules are in `docs/operations/local-development-agent-protocol.md`.
 
 ## Production Safety Defaults
 
@@ -144,27 +168,15 @@ Acceptance experiments use temporary worlds/timelines by default.
 
 Production credentials remain in VPS-local secure configuration such as `/opt/worldos/.env`.
 
-Never place raw `WORLDOS_DEBUG_TOKEN`, `WORLDOS_CONTROL_TOKEN`, or `WORLDOS_MCP_TOKEN` values in Issues, comments, PRs, commits, CI logs, or reports.
+Never place raw `WORLDOS_DEBUG_TOKEN`, `WORLDOS_CONTROL_TOKEN`, `WORLDOS_MCP_TOKEN`, or other production credentials in Issues, comments, PRs, commits, CI logs, local-agent context, or reports.
 
-Safe report fields include:
-
-- `tokens_unchanged: true`
-- `tokens_separate: true`
-- `tokens_leaked: false`
-
-Refer to secrets by environment-variable name only.
+Safe report fields include `tokens_unchanged: true`, `tokens_separate: true`, and `tokens_leaked: false`. Refer to secrets by environment-variable name only.
 
 ## Deployment Rules
 
-Deployment tasks pin both source and artifact identity.
+Deployment tasks pin both source and artifact identity. The VPS Agent verifies the requested commit and image and never silently substitutes `latest` or another SHA.
 
-The VPS agent must verify the requested commit and image. It must never silently substitute `latest` or another SHA.
-
-If a requested image is unavailable, report:
-
-`STATUS: BLOCKED`
-
-`REASON: IMAGE_NOT_PUBLISHED`
+If a requested image is unavailable, report `STATUS: BLOCKED` with `REASON: IMAGE_NOT_PUBLISHED`.
 
 Before deployment, capture the protected-world baseline: tick, event count, and world hash. Recheck them after deployment/acceptance.
 
@@ -194,50 +206,33 @@ Operations requiring expected hashes must refresh the target timeline hash first
 
 ## Failure Protocol
 
-When acceptance exposes an implementation defect, stop expanding the experiment and preserve the smallest useful diagnostic state.
+When local implementation or production acceptance exposes a defect, stop expanding the failing scope and preserve the smallest useful reproduction/evidence.
 
-Report:
+Report expected vs actual behavior, relevant world/timeline or local reproduction, files/functions, tests, error, suspected area, impact, and whether protected worlds remain unchanged where applicable.
 
-- failed step;
-- expected result;
-- actual result;
-- world/timeline;
-- tick/event count/hash prefix;
-- error;
-- minimal reproduction;
-- suspected area;
-- production impact;
-- whether protected worlds remain unchanged.
+Use `STATUS: FAILED` for a demonstrated implementation/acceptance failure and `STATUS: BLOCKED` for missing prerequisites, permissions, artifacts, or ambiguous instructions.
 
-Use `STATUS: FAILED` for an implementation/acceptance failure and `STATUS: BLOCKED` for missing prerequisites, permissions, artifacts, or ambiguous instructions.
-
-The source-development agent owns the subsequent source fix, PR, CI, merge, and updated deployment instruction.
+Source fixes flow back through `agent:local-dev`; production execution remains with `agent:vps`.
 
 ## Resume Protocol
 
-A failed or blocked task resumes only after a new explicit instruction such as `ACTION: RESUME` or a renewed `STATUS: READY` with the required version/instructions.
+A failed or blocked task resumes only after a new explicit instruction such as `ACTION: RESUME` or renewed `STATUS: READY` with required context/version.
 
-Do not repeat expensive steps already proven unaffected unless the new source version could invalidate them.
+Do not repeat expensive steps already proven unaffected unless the new version could invalidate them.
 
 ## Reporting Contract
 
-A final successful VPS comment begins with:
-
-`STATUS: PASSED`
-
-and includes auditable evidence, preferably numeric or identity-based: commit/image/digest, ticks, event counts, hash prefixes, event types, timeline IDs, actors, metrics, determinism checks, idempotency checks, cleanup, protected-world zero-pollution, and security checks.
-
-A bare `PASS` is insufficient.
+Reports must contain auditable evidence rather than bare PASS statements. Prefer commits, image/digest identities, exact test commands/results, ticks, event counts, hash/fingerprint prefixes, event types, timeline IDs, actors, metrics, determinism checks, idempotency checks, cleanup, and zero-pollution/security evidence as appropriate to the role.
 
 ## Cleanup
 
-Delete temporary acceptance worlds after successful acceptance through supported APIs, never by deleting database files.
+Local agents clean temporary local artifacts/worktrees when safe and never commit caches, virtual environments, local DBs, or test artifacts.
 
-A failed temporary world may be retained only when it has diagnostic value. Report its ID and reason, then clean it after the defect is resolved.
+VPS agents delete temporary acceptance worlds after successful acceptance through supported APIs, never by deleting database files.
 
 ## Human Approval Gates
 
-Stop for explicit human-owner approval before:
+Stop for explicit Human Owner approval before:
 
 1. destructive or irreversible mutation of real production worlds;
 2. production token rotation;
@@ -249,20 +244,19 @@ Stop for explicit human-owner approval before:
 
 ## Multi-Agent Scaling
 
-Future specialist agents should follow the same control-plane model and have non-overlapping authority. Examples:
+Agents have non-overlapping authority by default:
 
-- source/architecture agent: code and PRs;
-- QA/experiment agent: test protocol design and evidence review;
-- VPS agent: production execution only;
-- operations agent: infrastructure only when explicitly delegated;
-- research/product agent: specifications and analysis, no production writes by default.
+- Architect Agent: architecture, task contracts, review, acceptance interpretation;
+- Local Development Agent: code + local tests;
+- QA/experiment agent (future): protocol/test design and evidence review;
+- VPS Agent: deployment + production E2E;
+- operations agent (future): infrastructure only when explicitly delegated;
+- research/product agent (future): specifications/analysis, no production writes by default.
 
-Each task should have one accountable executor. Agents communicate through durable GitHub artifacts rather than hidden assumptions or human copy/paste relays.
+Each task has one accountable executor. Agents communicate through durable GitHub artifacts rather than hidden assumptions or human copy/paste relays.
 
-## Continuous Polling
+## Polling
 
-A VPS worker may poll for `agent:vps` + `status:ready` tasks every 1–5 minutes. If continuous polling is unavailable, it checks the task queue whenever invoked.
+A Local Development worker may poll for `agent:local-dev` + `status:ready`. A VPS worker may poll for `agent:vps` + `status:ready`. If continuous polling is unavailable, each checks its queue whenever invoked.
 
-Never rerun `PASSED` or `CANCELLED` tasks.
-
-GitHub unavailability is a stop condition for new production changes: do not execute new work from stale cached instructions.
+Never rerun `PASSED` or `CANCELLED` tasks. GitHub unavailability is a stop condition for new work from stale cached instructions.
